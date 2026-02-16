@@ -25,7 +25,7 @@ function loadSampleData() {
         { id: 'neuro_hacker', username: 'neuro_hacker', bio: 'AI jailbreak specialist', avatar: '🧠', online: true },
         { id: 'admin', username: 'admin', bio: 'Forum administrator', avatar: '👑', online: true }
     ];
-    
+}
 
 // ==================== FIREBASE AUTH STATE ====================
 firebase.auth().onAuthStateChanged(async (user) => {
@@ -1183,4 +1183,3 @@ window.deletePost = deletePost;
 window.showNewThreadModal = showNewThreadModal;
 window.showEditProfileModal = showEditProfileModal;
 window.showFirebaseAuthModal = showFirebaseAuthModal;
-}
