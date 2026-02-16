@@ -28,7 +28,7 @@ function loadSampleData() {
     
 
 // ==================== FIREBASE AUTH STATE ====================
-firebase.auth().onAuthStateChanged((user) => {
+firebase.auth().onAuthStateChanged(async (user) => {
     if (user) {
         // User sudah login
         console.log("User logged in:", user.email);
@@ -810,7 +810,7 @@ window.quoteReply = function(author, preview) {
     commandInput.focus();
 };
 
-window.navigateToProfile = function(username) {
+window.navigateToProfile = async function(username) {
     const user = getUserByUsername(username);
     if (!user) return;
     
