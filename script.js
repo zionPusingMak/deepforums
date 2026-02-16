@@ -1183,3 +1183,4 @@ window.deletePost = deletePost;
 window.showNewThreadModal = showNewThreadModal;
 window.showEditProfileModal = showEditProfileModal;
 window.showFirebaseAuthModal = showFirebaseAuthModal;
+}
