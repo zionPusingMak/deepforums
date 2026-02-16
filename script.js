@@ -1,14 +1,10 @@
-// ==================== GLOBAL VARIABLES ====================
+// ==================== DATA ====================
 let currentUser = null;
-let currentPage = 'forum-list';
-let currentForum = null;
-let currentThread = null;
-let currentProfileUser = null;
-let currentPMUser = null;
-let threadMedia = [];
+let users = [];
+let dummyForums = [];
 
-// Firebase sudah di-init di HTML, jadi bisa langsung pake:
-// firebase.auth(), firebase.firestore(), firebase.storage()
+// Sample avatars
+const avatarList = ['👤', '💻', '🕶️', '🧠', '👑', '🦊'];
 
 // ==================== UTILITIES ====================
 function formatTime() {
@@ -16,67 +12,155 @@ function formatTime() {
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// ==================== AUTH STATE ====================
-firebase.auth().onAuthStateChanged(async (user) => {
+function getUserByUsername(username) {
+    return users.find(u => u.username === username) || { username, avatar: '👤', bio: '' };
+}
+
+// Load sample data setelah register
+function loadSampleData() {
+    // Sample users (akan ditambah dengan user baru)
+    users = [
+        { id: 'zer0c00l', username: 'zer0c00l', bio: 'Exploit hunter', avatar: '💻', online: true },
+        { id: 'dark_1337', username: 'dark_1337', bio: 'Darknet enthusiast', avatar: '🕶️', online: true },
+        { id: 'neuro_hacker', username: 'neuro_hacker', bio: 'AI jailbreak specialist', avatar: '🧠', online: true },
+        { id: 'admin', username: 'admin', bio: 'Forum administrator', avatar: '👑', online: true }
+    ];
+    
+
+// ==================== FIREBASE AUTH STATE ====================
+firebase.auth().onAuthStateChanged((user) => {
     if (user) {
-        // Get user data from Firestore
-        const userDoc = await firebase.firestore().collection('users').doc(user.uid).get();
-        currentUser = {
-            uid: user.uid,
-            email: user.email,
-            ...userDoc.data()
-        };
+        // User sudah login
+        console.log("User logged in:", user.email);
+        
+        // Cari user di dummy users berdasarkan email
+        let existingUser = users.find(u => u.email === user.email);
+        
+        if (existingUser) {
+            currentUser = existingUser;
+        } else {
+            // Kalo user Firebase tapi belum ada di dummy, buat baru
+            currentUser = {
+                id: user.uid,
+                username: user.email.split('@')[0],
+                bio: 'No bio yet.',
+                avatar: '👤',
+                online: true,
+                email: user.email
+            };
+            users.push(currentUser);
+        }
         
         document.getElementById('currentUsernameDisplay').textContent = currentUser.username;
         document.getElementById('authModal').classList.remove('active');
         
-        // Update online status
-        await firebase.firestore().collection('users').doc(user.uid).update({ 
-            online: true,
-            lastSeen: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        
-        await seedForums();
-        
-        // Load data
-        await loadForums();
-        await loadOnlineUsers();
+        if (dummyForums.length === 0) loadSampleData();
+        renderForumList();
+        await seedForums();      // buat forums kalo belum ada
+        await loadForums();      // load forums dari Firestore
+        renderOnlineUsers();
         navigateToForumList();
+        
     } else {
-        showRegisterModal();
+        // User belum login - tampilkan modal auth
+        showFirebaseAuthModal();
     }
 });
 
-// ==================== AUTO-SEED FORUMS ====================
+// ==================== SEED FORUMS KE FIRESTORE ====================
 async function seedForums() {
-    const forumsSnapshot = await firebase.firestore().collection('forums').get();
+    const db = firebase.firestore();
+    const forumsSnapshot = await db.collection('forums').get();
     
+    // Kalo masih kosong, tambahin default forums
     if (forumsSnapshot.empty) {
-        console.log("No forums found, seeding default forums...");
+        console.log("🔥 Seeding default forums to Firestore...");
         
         const defaultForums = [
-            { name: 'general', description: 'General discussion', private: false, threadCount: 0 },
-            { name: 'exploit', description: 'Zero-day & exploit discussion', private: false, threadCount: 0 },
-            { name: 'gore', description: 'NSFW - 18+ only', private: true, threadCount: 0 },
-            { name: 'education', description: 'Learning & tutorials', private: false, threadCount: 0 }
+            { 
+                name: 'general', 
+                description: 'General discussion', 
+                private: false, 
+                threadCount: 0,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            },
+            { 
+                name: 'exploit', 
+                description: 'Zero-day & exploit discussion', 
+                private: false, 
+                threadCount: 0,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            },
+            { 
+                name: 'gore', 
+                description: 'NSFW - 18+ only', 
+                private: true, 
+                threadCount: 0,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            },
+            { 
+                name: 'education', 
+                description: 'Learning & tutorials', 
+                private: false, 
+                threadCount: 0,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }
         ];
         
-        const batch = firebase.firestore().batch();
+        // Batch write biar cepet
+        const batch = db.batch();
         defaultForums.forEach(forum => {
-            const docRef = firebase.firestore().collection('forums').doc(forum.name);
+            const docRef = db.collection('forums').doc(forum.name);
             batch.set(docRef, forum);
         });
         
         await batch.commit();
-        console.log("Default forums seeded!");
+        console.log("✅ Default forums seeded!");
+    } else {
+        console.log("📁 Forums already exist in Firestore");
     }
 }
 
-// ==================== AUTH MODAL ====================
-function showRegisterModal() {
+// ==================== LOAD FORUMS DARI FIRESTORE ====================
+async function loadForums() {
+    const db = firebase.firestore();
+    
+    try {
+        const snapshot = await db.collection('forums')
+            .orderBy('name')
+            .get();
+        
+        // Kosongin dummyForums dulu
+        dummyForums.length = 0;
+        
+        snapshot.forEach(doc => {
+            dummyForums.push({
+                id: doc.id,
+                ...doc.data()
+            });
+        });
+        
+        console.log("📁 Forums loaded from Firestore:", dummyForums.length);
+        renderForumList();
+        
+    } catch (error) {
+        console.error("Error loading forums:", error);
+        // Fallback ke dummy data kalo error
+        if (dummyForums.length === 0) {
+            dummyForums.push(
+                { id: 1, name: 'general', description: 'General discussion', private: false, postCount: 142 },
+                { id: 2, name: 'exploit', description: 'Zero-day & exploit', private: false, postCount: 87 }
+            );
+            renderForumList();
+        }
+    }
+}
+
+// ==================== FIREBASE AUTH MODAL ====================
+function showFirebaseAuthModal() {
     const modalContent = document.getElementById('authModalContent');
     modalContent.innerHTML = `
-        <h2><i class="fas fa-user-plus"></i> Register</h2>
+        <h2><i class="fas fa-user-plus"></i> Register / Login</h2>
         <div class="modal-input">
             <label>Username *</label>
             <input type="text" id="regUsername" placeholder="Choose username...">
@@ -104,15 +188,16 @@ function showRegisterModal() {
                 <div class="avatar-option" data-avatar="🦊">🦊</div>
             </div>
         </div>
-        <div class="modal-actions">
-            <button class="modal-btn primary" id="registerBtn"><i class="fas fa-check"></i> REGISTER</button>
+        <div class="modal-actions" style="justify-content: space-between;">
+            <button class="modal-btn" id="loginBtn">LOGIN</button>
+            <button class="modal-btn primary" id="registerBtn">REGISTER</button>
         </div>
         <div class="toggle-auth">
-            Already have account? <span onclick="showLoginModal()">Login here</span>
+            <span style="color:#888;">Akun akan tersimpan di Firebase</span>
         </div>
     `;
     
-    // Avatar selection
+    // Avatar selection (sama seperti sebelumnya)
     const avatarOptions = document.querySelectorAll('.avatar-option');
     avatarOptions.forEach(opt => {
         opt.addEventListener('click', () => {
@@ -121,180 +206,91 @@ function showRegisterModal() {
         });
     });
     
+    // ========== LOGIN ==========
+    document.getElementById('loginBtn').addEventListener('click', async () => {
+        const email = document.getElementById('regEmail').value.trim();
+        const password = document.getElementById('regPassword').value;
+        
+        if (!email || !password) {
+            alert('Email and password required');
+            return;
+        }
+        
+        try {
+            await firebase.auth().signInWithEmailAndPassword(email, password);
+            // Auth state akan otomatis ke onAuthStateChanged
+        } catch (error) {
+            alert('Login error: ' + error.message);
+        }
+    });
+    
+    // ========== REGISTER ==========
     document.getElementById('registerBtn').addEventListener('click', async () => {
         const username = document.getElementById('regUsername').value.trim();
         const email = document.getElementById('regEmail').value.trim();
         const password = document.getElementById('regPassword').value;
         const bio = document.getElementById('regBio').value.trim() || 'No bio yet.';
-        const avatar = document.querySelector('.avatar-option.selected')?.dataset.avatar || '👤';
+        const selectedAvatar = document.querySelector('.avatar-option.selected')?.dataset.avatar || '👤';
         
         if (!username || !email || !password) {
             alert('All fields required');
             return;
         }
         
-        try {
-            // Check if username exists
-            const usernameCheck = await firebase.firestore()
-                .collection('users')
-                .where('username', '==', username)
-                .get();
-            
-            if (!usernameCheck.empty) {
-                alert('Username already taken');
-                return;
-            }
-            
-            // Create auth user
-            const userCred = await firebase.auth().createUserWithEmailAndPassword(email, password);
-            
-            // Save to Firestore
-            await firebase.firestore().collection('users').doc(userCred.user.uid).set({
-                username: username,
-                email: email,
-                bio: bio,
-                avatar: avatar,
-                online: true,
-                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                lastSeen: firebase.firestore.FieldValue.serverTimestamp()
-            });
-            
-        } catch (error) {
-            alert(error.message);
+        // Cek username udah dipake? (di dummy users)
+        if (users.some(u => u.username === username)) {
+            alert('Username already taken');
+            return;
         }
-    });
-}
-
-function showLoginModal() {
-    const modalContent = document.getElementById('authModalContent');
-    modalContent.innerHTML = `
-        <h2><i class="fas fa-sign-in-alt"></i> Login</h2>
-        <div class="modal-input">
-            <label>Email</label>
-            <input type="email" id="loginEmail" placeholder="your@email.com">
-        </div>
-        <div class="modal-input">
-            <label>Password</label>
-            <input type="password" id="loginPassword" placeholder="Password...">
-        </div>
-        <div class="modal-actions">
-            <button class="modal-btn primary" id="loginBtn"><i class="fas fa-sign-in-alt"></i> LOGIN</button>
-        </div>
-        <div class="toggle-auth">
-            Don't have account? <span onclick="showRegisterModal()">Register here</span>
-        </div>
-    `;
-    
-    document.getElementById('loginBtn').addEventListener('click', async () => {
-        const email = document.getElementById('loginEmail').value.trim();
-        const password = document.getElementById('loginPassword').value;
         
         try {
-            await firebase.auth().signInWithEmailAndPassword(email, password);
+            // Buat akun Firebase
+            const userCred = await firebase.auth().createUserWithEmailAndPassword(email, password);
+            
+            // Tambah user ke dummy users (tetep pake dummy)
+            const newUser = {
+                id: userCred.user.uid,
+                username: username,
+                bio: bio,
+                avatar: selectedAvatar,
+                online: true,
+                email: email
+            };
+            
+            users.push(newUser);
+            currentUser = newUser;
+            
+            document.getElementById('currentUsernameDisplay').textContent = currentUser.username;
+            document.getElementById('authModal').classList.remove('active');
+            
+            loadSampleData();
+            renderForumList();
+            renderOnlineUsers();
+            navigateToForumList();
+            
         } catch (error) {
-            alert(error.message);
+            alert('Register error: ' + error.message);
         }
     });
 }
 
-// ==================== LOAD DATA ====================
-async function loadForums() {
-    const snapshot = await firebase.firestore()
-        .collection('forums')
-        .orderBy('name')
-        .get();
-    
-    window.forums = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-    }));
-    
-    renderForumList();
-}
+// ==================== STATE ====================
+let currentPage = 'forum-list';
+let currentForum = null;
+let currentThread = null;
+let currentProfileUser = null;
+let currentPMUser = null;
+let threadMedia = [];
 
-async function loadOnlineUsers() {
-    // Get users active in last 5 minutes
-    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-    
-    const snapshot = await firebase.firestore()
-        .collection('users')
-        .where('online', '==', true)
-        // .where('lastSeen', '>', fiveMinAgo) // Uncomment kalo mau filter
-        .get();
-    
-    window.onlineUsers = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-    }));
-    
-    renderOnlineUsers();
-}
-
-// ==================== SIDEBAR ====================
+// ==================== DOM ELEMENTS ====================
 const sidebar = document.getElementById('sidebar');
 const menuToggle = document.getElementById('menuToggle');
 const closeSidebar = document.getElementById('closeSidebar');
-
-menuToggle.addEventListener('click', () => sidebar.classList.add('open'));
-closeSidebar.addEventListener('click', () => sidebar.classList.remove('open'));
-
-document.addEventListener('click', (e) => {
-    if (window.innerWidth <= 767) {
-        if (!sidebar.contains(e.target) && !menuToggle.contains(e.target)) {
-            sidebar.classList.remove('open');
-        }
-    }
-});
-
-function renderForumList() {
-    const forumList = document.getElementById('forumList');
-    if (!window.forums) return;
-    
-    forumList.innerHTML = '';
-    window.forums.forEach(forum => {
-        const forumDiv = document.createElement('div');
-        forumDiv.className = 'forum-item';
-        forumDiv.innerHTML = `
-            ${forum.name}/
-            ${forum.private ? '<span style="color:#ff6b6b;"> [PRIVATE]</span>' : ''}
-            <span style="color:#888888; float:right;">${forum.threadCount || 0}</span>
-        `;
-        forumDiv.onclick = () => {
-            navigateToForum(forum);
-            if (window.innerWidth <= 767) sidebar.classList.remove('open');
-        };
-        forumList.appendChild(forumDiv);
-    });
-}
-
-function renderOnlineUsers() {
-    const onlineList = document.getElementById('onlineList');
-    if (!onlineList || !window.onlineUsers) return;
-    
-    onlineList.innerHTML = '';
-    window.onlineUsers.forEach(user => {
-        const div = document.createElement('div');
-        div.className = 'online-item';
-        div.innerHTML = `${user.avatar || '👤'} ${user.username}`;
-        div.onclick = () => navigateToProfile(user.username);
-        onlineList.appendChild(div);
-    });
-}
-
-// ==================== COMMAND BAR ====================
+const forumList = document.getElementById('forumList');
+const contentArea = document.getElementById('contentArea');
 const commandBar = document.getElementById('commandBar');
 const commandInput = document.getElementById('commandInput');
 const sendBtn = document.getElementById('sendBtn');
-
-function updateCommandBar() {
-    if (currentPage === 'thread-view') {
-        commandBar.classList.remove('hidden');
-    } else {
-        commandBar.classList.add('hidden');
-    }
-}
-
-// ==================== THREAD MODAL ====================
 const threadModal = document.getElementById('newThreadModal');
 const threadTitle = document.getElementById('threadTitle');
 const threadContent = document.getElementById('threadContent');
@@ -312,7 +308,72 @@ const fileSourceUpload = document.getElementById('fileSourceUpload');
 const fileSourceUrl = document.getElementById('fileSourceUrl');
 const fileUploadSection = document.getElementById('fileUploadSection');
 const fileUrlSection = document.getElementById('fileUrlSection');
+const editModal = document.getElementById('editProfileModal');
+const editUsername = document.getElementById('editUsername');
+const editBio = document.getElementById('editBio');
+const photoInput = document.getElementById('photoInput');
+const photoUrl = document.getElementById('photoUrl');
+const photoName = document.getElementById('photoName');
+const cancelEditBtn = document.getElementById('cancelEditBtn');
+const saveEditBtn = document.getElementById('saveEditBtn');
+const photoSourceUpload = document.getElementById('photoSourceUpload');
+const photoSourceUrl = document.getElementById('photoSourceUrl');
+const photoUploadSection = document.getElementById('photoUploadSection');
+const photoUrlSection = document.getElementById('photoUrlSection');
 
+// ==================== SIDEBAR ====================
+menuToggle.addEventListener('click', () => sidebar.classList.add('open'));
+closeSidebar.addEventListener('click', () => sidebar.classList.remove('open'));
+document.addEventListener('click', (e) => {
+    if (window.innerWidth <= 767) {
+        if (!sidebar.contains(e.target) && !menuToggle.contains(e.target)) {
+            sidebar.classList.remove('open');
+        }
+    }
+});
+
+function renderForumList() {
+    if (!dummyForums.length) return;
+    forumList.innerHTML = '';
+    dummyForums.forEach(forum => {
+        const forumDiv = document.createElement('div');
+        forumDiv.className = 'forum-item';
+        forumDiv.innerHTML = `
+            ${forum.name}/
+            ${forum.private ? '<span style="color:#ff6b6b;"> [PRIVATE]</span>' : ''}
+            <span style="color:#888888; float:right;">${forum.postCount}</span>
+        `;
+        forumDiv.onclick = () => {
+            navigateToForum(forum);
+            if (window.innerWidth <= 767) sidebar.classList.remove('open');
+        };
+        forumList.appendChild(forumDiv);
+    });
+}
+
+function renderOnlineUsers() {
+    const onlineList = document.getElementById('onlineList');
+    if (!onlineList || !users.length) return;
+    onlineList.innerHTML = '';
+    users.filter(u => u.online).forEach(user => {
+        const div = document.createElement('div');
+        div.className = 'online-item';
+        div.innerHTML = `${user.avatar || '👤'} ${user.username}`;
+        div.onclick = () => navigateToProfile(user.username);
+        onlineList.appendChild(div);
+    });
+}
+
+// ==================== COMMAND BAR ====================
+function updateCommandBar() {
+    if (currentPage === 'thread-view') {
+        commandBar.classList.remove('hidden');
+    } else {
+        commandBar.classList.add('hidden');
+    }
+}
+
+// ==================== THREAD MODAL ====================
 function showNewThreadModal() {
     threadTitle.value = '';
     threadContent.value = '';
@@ -326,6 +387,9 @@ function hideThreadModal() {
 }
 
 // File upload modal
+let currentFileType = 'image';
+let currentFileData = null;
+
 addFileBtn.addEventListener('click', () => {
     fileModal.classList.add('active');
     fileSourceUpload.click();
@@ -349,6 +413,15 @@ fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (file) {
         fileName.textContent = file.name;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            currentFileData = {
+                type: file.type.startsWith('image/') ? 'image' : 'video',
+                url: e.target.result,
+                name: file.name
+            };
+        };
+        reader.readAsDataURL(file);
     }
 });
 
@@ -357,36 +430,30 @@ cancelFileBtn.addEventListener('click', () => {
     fileInput.value = '';
     fileUrl.value = '';
     fileName.textContent = 'No file chosen';
+    currentFileData = null;
 });
 
-insertFileBtn.addEventListener('click', async () => {
+insertFileBtn.addEventListener('click', () => {
     let fileData = null;
     
-    if (fileSourceUpload.classList.contains('active') && fileInput.files[0]) {
-        const file = fileInput.files[0];
-        const storageRef = firebase.storage().ref(`threads/${Date.now()}_${file.name}`);
-        await storageRef.put(file);
-        const url = await storageRef.getDownloadURL();
-        
-        fileData = {
-            type: file.type.startsWith('image/') ? 'image' : 'video',
-            url: url,
-            name: file.name
-        };
-    } else if (fileSourceUrl.classList.contains('active') && fileUrl.value.trim()) {
+    if (fileSourceUpload.classList.contains('active')) {
+        fileData = currentFileData;
+    } else {
         const url = fileUrl.value.trim();
-        const isImage = url.match(/\.(jpeg|jpg|gif|png|webp)$/i);
-        const isVideo = url.match(/\.(mp4|webm|mov)$/i);
-        
-        if (isImage || isVideo) {
-            fileData = {
-                type: isImage ? 'image' : 'video',
-                url: url,
-                name: url.split('/').pop()
-            };
-        } else {
-            alert('Invalid URL. Please use image or video URL');
-            return;
+        if (url) {
+            const isImage = url.match(/\.(jpeg|jpg|gif|png|webp)$/i);
+            const isVideo = url.match(/\.(mp4|webm|mov)$/i);
+            
+            if (isImage || isVideo) {
+                fileData = {
+                    type: isImage ? 'image' : 'video',
+                    url: url,
+                    name: url.split('/').pop()
+                };
+            } else {
+                alert('Invalid URL. Please use image or video URL');
+                return;
+            }
         }
     }
     
@@ -403,11 +470,12 @@ insertFileBtn.addEventListener('click', async () => {
     fileInput.value = '';
     fileUrl.value = '';
     fileName.textContent = 'No file chosen';
+    currentFileData = null;
 });
 
 cancelThreadBtn.addEventListener('click', hideThreadModal);
 
-createThreadBtn.addEventListener('click', async () => {
+createThreadBtn.addEventListener('click', async () => {  
     const title = threadTitle.value.trim();
     const content = threadContent.value.trim();
     
@@ -416,7 +484,7 @@ createThreadBtn.addEventListener('click', async () => {
         return;
     }
     
-    // Save thread to Firestore
+    // Simpan ke Firestore
     await firebase.firestore().collection('threads').add({
         forumId: currentForum.id,
         title: title,
@@ -429,10 +497,10 @@ createThreadBtn.addEventListener('click', async () => {
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     
-    // Update thread count in forum
-    await firebase.firestore().collection('forums').doc(currentForum.id).update({
-        threadCount: firebase.firestore.FieldValue.increment(1)
-    });
+    // Update thread count di forum (kalo pake Firestore di Tahap 2)
+    // await firebase.firestore().collection('forums').doc(currentForum.id).update({
+    //     threadCount: firebase.firestore.FieldValue.increment(1)
+    // });
     
     hideThreadModal();
     navigateToForum(currentForum);
@@ -443,19 +511,6 @@ threadModal.addEventListener('click', (e) => {
 });
 
 // ==================== EDIT PROFILE ====================
-const editModal = document.getElementById('editProfileModal');
-const editUsername = document.getElementById('editUsername');
-const editBio = document.getElementById('editBio');
-const photoInput = document.getElementById('photoInput');
-const photoUrl = document.getElementById('photoUrl');
-const photoName = document.getElementById('photoName');
-const cancelEditBtn = document.getElementById('cancelEditBtn');
-const saveEditBtn = document.getElementById('saveEditBtn');
-const photoSourceUpload = document.getElementById('photoSourceUpload');
-const photoSourceUrl = document.getElementById('photoSourceUrl');
-const photoUploadSection = document.getElementById('photoUploadSection');
-const photoUrlSection = document.getElementById('photoUrlSection');
-
 function showEditProfileModal() {
     editUsername.value = currentUser.username;
     editBio.value = currentUser.bio || '';
@@ -486,54 +541,35 @@ photoInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (file) {
         photoName.textContent = file.name;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            currentUser.avatar = e.target.result;
+        };
+        reader.readAsDataURL(file);
     }
 });
 
-saveEditBtn.addEventListener('click', async () => {
+saveEditBtn.addEventListener('click', () => {
     const newUsername = editUsername.value.trim();
     const newBio = editBio.value.trim();
+    const newPhotoUrl = photoUrl.value.trim();
     
-    // Check username availability if changed
     if (newUsername && newUsername !== currentUser.username) {
-        const check = await firebase.firestore()
-            .collection('users')
-            .where('username', '==', newUsername)
-            .get();
-        
-        if (!check.empty) {
+        if (users.some(u => u.username === newUsername)) {
             alert('Username already taken');
             return;
         }
+        currentUser.username = newUsername;
+        document.getElementById('currentUsernameDisplay').textContent = newUsername;
     }
     
-    let avatar = currentUser.avatar;
+    if (newBio) currentUser.bio = newBio;
     
-    // Upload new photo if selected
-    if (photoSourceUpload.classList.contains('active') && photoInput.files[0]) {
-        const file = photoInput.files[0];
-        const storageRef = firebase.storage().ref(`avatars/${currentUser.uid}`);
-        await storageRef.put(file);
-        avatar = await storageRef.getDownloadURL();
-    } else if (photoSourceUrl.classList.contains('active') && photoUrl.value.trim()) {
-        avatar = photoUrl.value.trim();
+    if (newPhotoUrl) {
+        currentUser.avatar = newPhotoUrl;
     }
     
-    // Update Firestore
-    await firebase.firestore().collection('users').doc(currentUser.uid).update({
-        username: newUsername || currentUser.username,
-        bio: newBio || currentUser.bio,
-        avatar: avatar
-    });
-    
-    // Update current user object
-    currentUser.username = newUsername || currentUser.username;
-    currentUser.bio = newBio || currentUser.bio;
-    currentUser.avatar = avatar;
-    
-    document.getElementById('currentUsernameDisplay').textContent = currentUser.username;
     editModal.classList.remove('active');
-    
-    // Refresh profile if on own profile page
     if (currentPage === 'profile' && currentProfileUser?.username === currentUser.username) {
         navigateToProfile(currentUser.username);
     }
@@ -544,30 +580,62 @@ editModal.addEventListener('click', (e) => {
 });
 
 // ==================== DELETE FUNCTIONS ====================
-async function deleteThread(threadId, forumId) {
+async function deleteThread(threadId, forumId) {  
     if (!confirm('Delete this thread?')) return;
     
-    await firebase.firestore().collection('threads').doc(threadId).delete();
-    await firebase.firestore().collection('forums').doc(forumId).update({
-        threadCount: firebase.firestore.FieldValue.increment(-1)
-    });
-    
-    navigateToForum(currentForum);
+    try {
+        // Hapus thread dari Firestore
+        await firebase.firestore().collection('threads').doc(threadId).delete();
+        
+        // Opsional: Update threadCount di forum (kalo pake)
+        // await firebase.firestore().collection('forums').doc(forumId).update({
+        //     threadCount: firebase.firestore.FieldValue.increment(-1)
+        // });
+        
+        console.log("Thread deleted:", threadId);
+        
+        // Refresh halaman forum
+        navigateToForum(currentForum);
+        
+    } catch (error) {
+        console.error("Error deleting thread:", error);
+        alert("Gagal menghapus thread: " + error.message);
+    }
 }
 
-async function deletePost(threadId, postId) {
+async function deletePost(threadId, postId) {  // ← TAMBAH async
     if (!confirm('Delete this comment?')) return;
     
-    await firebase.firestore().collection('posts').doc(postId).delete();
-    await firebase.firestore().collection('threads').doc(threadId).update({
-        replies: firebase.firestore.FieldValue.increment(-1)
-    });
-    
-    navigateToThread(threadId);
+    try {
+        // Hapus post dari subcollection
+        await firebase.firestore()
+            .collection('threads')
+            .doc(threadId)
+            .collection('posts')
+            .doc(postId)
+            .delete();
+        
+        // Update reply count di thread
+        await firebase.firestore()
+            .collection('threads')
+            .doc(threadId)
+            .update({
+                replies: firebase.firestore.FieldValue.increment(-1)
+            });
+        
+        console.log("Post deleted:", postId);
+        
+        // Refresh halaman thread
+        navigateToThread(threadId);
+        
+    } catch (error) {
+        console.error("Error deleting post:", error);
+        alert("Gagal menghapus komentar: " + error.message);
+    }
 }
 
 // ==================== NAVIGATION ====================
-window.navigateToForumList = async function() {
+window.navigateToForumList = function() {
     if (!currentUser) return;
     
     currentPage = 'forum-list';
@@ -577,33 +645,29 @@ window.navigateToForumList = async function() {
     currentPMUser = null;
     updateCommandBar();
     
-    const forumsSnapshot = await firebase.firestore()
-        .collection('forums')
-        .orderBy('name')
-        .get();
-    
-    const forums = forumsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    
     let html = `
         <div class="page-header">
             <span class="page-title"><i class="fas fa-th-large"></i> All Forums</span>
-            <span class="page-meta">${forums.length} forums</span>
+            <span class="page-meta">${dummyForums.length} forums</span>
         </div>
     `;
     
-    forums.forEach(forum => {
+    dummyForums.forEach(forum => {
+        // Pake threadCount dari Firestore, atau fallback 0
+        const threadCount = forum.threadCount || 0;
+        
         html += `
             <div class="thread-card" onclick="navigateToForum(${JSON.stringify(forum).replace(/"/g, '&quot;')})">
                 <div class="thread-header">
                     <span class="thread-title"><i class="fas fa-folder-open"></i> /${forum.name}/</span>
-                    <span class="thread-meta"><i class="fas fa-comments"></i> ${forum.threadCount || 0} threads</span>
+                    <span class="thread-meta"><i class="fas fa-comments"></i> ${threadCount} threads</span>
                 </div>
                 <div class="thread-content">${forum.description} ${forum.private ? '🔒 Private' : '🌍 Public'}</div>
             </div>
         `;
     });
     
-    document.getElementById('contentArea').innerHTML = html;
+    contentArea.innerHTML = html;
 };
 
 window.navigateToForum = async function(forum) {
@@ -616,13 +680,17 @@ window.navigateToForum = async function(forum) {
     currentPMUser = null;
     updateCommandBar();
     
+    // AMBIL THREAD DARI FIRESTORE
     const threadsSnapshot = await firebase.firestore()
         .collection('threads')
         .where('forumId', '==', forum.id)
         .orderBy('createdAt', 'desc')
         .get();
     
-    const threads = threadsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const threads = threadsSnapshot.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data() 
+    }));
     
     let html = `
         <div class="page-header">
@@ -641,13 +709,13 @@ window.navigateToForum = async function(forum) {
         html += '<div class="empty-state">No threads in this forum yet.</div>';
     } else {
         threads.forEach(thread => {
-            const isOwnThread = thread.authorId === currentUser.uid;
+            const isOwnThread = thread.author === currentUser.username;
             html += `
-                <div class="thread-card" onclick="navigateToThread('${thread.id}')">
-                    ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread('${thread.id}', '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
+                <div class="thread-card" onclick="navigateToThread(${thread.id})">
+                    ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread(${thread.id}, '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
-                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.author}')">${thread.author}</a> · ${new Date(thread.time).toLocaleString()} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
+                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.author}')">${thread.author}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
                     </div>
                     <div class="thread-content">${thread.content.substring(0, 150)}${thread.content.length > 150 ? '...' : ''}</div>
                 </div>
@@ -655,32 +723,41 @@ window.navigateToForum = async function(forum) {
         });
     }
     
-    document.getElementById('contentArea').innerHTML = html;
+    contentArea.innerHTML = html;
 };
 
-window.navigateToThread = async function(threadId) {
-    const threadDoc = await firebase.firestore().collection('threads').doc(threadId).get();
+window.navigateToThread = async function(threadId) {  // ← TAMBAH async
+    // Ambil thread dari Firestore
+    const threadDoc = await firebase.firestore()
+        .collection('threads')
+        .doc(threadId)
+        .get();
+    
     if (!threadDoc.exists) return;
     
     const foundThread = { id: threadDoc.id, ...threadDoc.data() };
-    const forumDoc = await firebase.firestore().collection('forums').doc(foundThread.forumId).get();
-    const foundForum = { id: forumDoc.id, ...forumDoc.data() };
+    
+    // Ambil forum (masih pake dummy atau Firestore? Tergantung Tahap 2)
+    const foundForum = dummyForums.find(f => f.id === foundThread.forumId) || 
+                      { id: foundThread.forumId, name: 'unknown' };
     
     currentPage = 'thread-view';
     currentThread = foundThread;
     currentForum = foundForum;
-    currentProfileUser = null;
-    currentPMUser = null;
     updateCommandBar();
     
-    // Get posts
+    // AMBIL POSTS DARI FIRESTORE (subcollection)
     const postsSnapshot = await firebase.firestore()
+        .collection('threads')
+        .doc(threadId)
         .collection('posts')
-        .where('threadId', '==', threadId)
         .orderBy('createdAt')
         .get();
     
-    const posts = postsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const posts = postsSnapshot.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data() 
+    }));
     
     let html = `
         <div class="page-header">
@@ -694,6 +771,7 @@ window.navigateToThread = async function(threadId) {
         <div class="thread-content" style="margin-bottom: 20px;">${foundThread.content}</div>
     `;
     
+    // Tampilkan media thread
     if (foundThread.media && foundThread.media.length > 0) {
         foundThread.media.forEach(item => {
             if (item.type === 'image') {
@@ -704,6 +782,7 @@ window.navigateToThread = async function(threadId) {
         });
     }
     
+    // Tampilkan posts
     posts.forEach(post => {
         const isOwnPost = post.authorId === currentUser.uid;
         html += `
@@ -714,19 +793,6 @@ window.navigateToThread = async function(threadId) {
                     <span class="post-time">${post.time}</span>
                 </div>
                 <div class="post-content">${post.content}</div>
-        `;
-        
-        if (post.media && post.media.length > 0) {
-            post.media.forEach(item => {
-                if (item.type === 'image') {
-                    html += `<div class="post-media"><img src="${item.url}" style="max-width:100%;"></div>`;
-                } else if (item.type === 'video') {
-                    html += `<div class="post-media"><video src="${item.url}" controls style="max-width:100%;"></video></div>`;
-                }
-            });
-        }
-        
-        html += `
                 <button class="reply-btn" onclick="quoteReply('${post.author}')">
                     <i class="fas fa-reply"></i> Reply
                 </button>
@@ -736,48 +802,34 @@ window.navigateToThread = async function(threadId) {
     
     html += `<div class="empty-state" style="text-align:left; padding:20px 0;"><i class="fas fa-comment"></i> Type your reply below...</div>`;
     
-    document.getElementById('contentArea').innerHTML = html;
+    contentArea.innerHTML = html;
 };
 
-window.navigateToProfile = async function(username) {
-    console.log("navigateToProfile called with:", username); // DEBUG
-    console.log("currentUser:", currentUser); // DEBUG
-    
-    if (!username) {
-        // Fallback ke current user
-        if (currentUser && currentUser.username) {
-            username = currentUser.username;
-            console.log("Fallback to current username:", username);
-        } else {
-            alert("Username not found");
-            return;
-        }
-    }
-    
-    // Find user by username
-    const userQuery = await firebase.firestore()
-        .collection('users')
-        .where('username', '==', username)
-        .get();
-    
-    if (userQuery.empty) return;
-    
-    const userDoc = userQuery.docs[0];
-    const user = { id: userDoc.id, ...userDoc.data() };
+window.quoteReply = function(author, preview) {
+    commandInput.value = `@${author} `;
+    commandInput.focus();
+};
+
+window.navigateToProfile = function(username) {
+    const user = getUserByUsername(username);
+    if (!user) return;
     
     currentPage = 'profile';
     currentProfileUser = user;
     currentPMUser = null;
     updateCommandBar();
     
-    // Find threads by this user
-    const threadsSnapshot = await firebase.firestore()
-        .collection('threads')
-        .where('author', '==', username)
-        .orderBy('createdAt', 'desc')
-        .get();
-    
-    const userThreads = threadsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+// Ambil threads dari Firestore berdasarkan author
+const threadsSnapshot = await firebase.firestore()
+    .collection('threads')
+    .where('author', '==', username)
+    .orderBy('createdAt', 'desc')
+    .get();
+
+const userThreads = threadsSnapshot.docs.map(doc => ({ 
+    id: doc.id, 
+    ...doc.data() 
+}));
     
     const isOwnProfile = currentUser.username === username;
     
@@ -791,15 +843,15 @@ window.navigateToProfile = async function(username) {
         
         <div class="profile-header">
             <div class="profile-avatar">
-                ${user.avatar?.startsWith('http') ? `<img src="${user.avatar}">` : user.avatar || '👤'}
+                ${user.avatar?.startsWith('data:') ? `<img src="${user.avatar}">` : user.avatar || '👤'}
             </div>
             <div class="profile-info">
                 <div class="profile-username">${user.username}</div>
                 <div class="profile-bio">${user.bio || 'No bio yet.'}</div>
-                <div class="profile-stats"><i class="fas fa-calendar-alt"></i> Joined: ${user.createdAt ? new Date(user.createdAt.toDate()).toLocaleDateString() : '2025'} · <i class="fas fa-file-alt"></i> Threads: ${userThreads.length}</div>
+                <div class="profile-stats"><i class="fas fa-calendar-alt"></i> Joined: 2025 · <i class="fas fa-file-alt"></i> Threads: ${userThreads.length}</div>
             </div>
             ${isOwnProfile ? 
-                `<button class="edit-profile-btn" onclick="showEditProfileModal()"><i class="fas fa-edit"></i> EDIT PROFILE</button>` : 
+                `<button class="edit-profile-btn" onclick="showEditProfileModal()"><i class="fas fa-edit"></i> EDIT </button>` : 
                 `<button class="send-message-btn" onclick="navigateToPM('${user.username}')"><i class="fas fa-envelope"></i> SEND MESSAGE</button>`
             }
         </div>
@@ -812,11 +864,12 @@ window.navigateToProfile = async function(username) {
         html += '<div class="empty-state">No threads yet.</div>';
     } else {
         userThreads.forEach(thread => {
+            const forum = dummyForums.find(f => f.id === parseInt(thread.forumId));
             html += `
-                <div class="thread-card" onclick="navigateToThread('${thread.id}')">
+                <div class="thread-card" onclick="navigateToThread(${thread.id})">
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
-                        <span class="thread-meta"><i class="fas fa-folder"></i> · ${new Date(thread.time).toLocaleString()}</span>
+                        <span class="thread-meta"><i class="fas fa-folder"></i> /${forum.name}/ · ${thread.time}</span>
                     </div>
                     <div class="thread-content">${thread.content.substring(0, 100)}...</div>
                 </div>
@@ -825,10 +878,15 @@ window.navigateToProfile = async function(username) {
     }
     
     html += '</div>';
-    document.getElementById('contentArea').innerHTML = html;
+    contentArea.innerHTML = html;
 };
 
 window.navigateToGlobalChat = function() {
+    if (!currentUser) {
+        alert("Please login first");
+        return;
+    }
+    
     currentPage = 'global-chat';
     updateCommandBar();
     
@@ -838,7 +896,7 @@ window.navigateToGlobalChat = function() {
                 <button class="back-btn" onclick="navigateToForumList()"><i class="fas fa-arrow-left"></i> BACK</button>
                 <span class="page-title"><i class="fas fa-globe"></i> Global Chat</span>
             </div>
-            <span class="page-meta">Semua user bisa chat di sini</span>
+            <span class="page-meta">Real-time chat</span>
         </div>
         
         <div class="chat-container">
@@ -852,13 +910,14 @@ window.navigateToGlobalChat = function() {
     
     document.getElementById('contentArea').innerHTML = html;
     
-    // Load messages realtime
+    // ========== REALTIME LISTENER ==========
     const messagesRef = firebase.firestore()
         .collection('globalChat')
         .orderBy('createdAt', 'desc')
         .limit(50);
     
-    messagesRef.onSnapshot((snapshot) => {
+    // Listener akan jalan terus
+    const unsubscribe = messagesRef.onSnapshot((snapshot) => {
         const messagesDiv = document.getElementById('globalMessages');
         if (!messagesDiv) return;
         
@@ -878,11 +937,11 @@ window.navigateToGlobalChat = function() {
             messagesDiv.appendChild(msgDiv);
         });
         
-        // Scroll ke bawah
+        // Auto scroll ke bawah
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     });
     
-    // Send message
+    // ========== SEND MESSAGE ==========
     document.getElementById('chatSendBtn').addEventListener('click', async () => {
         const input = document.getElementById('chatInput');
         const text = input.value.trim();
@@ -904,17 +963,25 @@ window.navigateToGlobalChat = function() {
             document.getElementById('chatSendBtn').click();
         }
     });
+    
+    // Simpan unsubscribe function untuk cleanup (opsional)
+    window.globalChatUnsubscribe = unsubscribe;
 };
 
 window.navigateToPM = async function(withUser) {
+    if (!currentUser) return;
     if (withUser === currentUser.username) return;
     
+    // Cari user tujuan di Firestore
     const userQuery = await firebase.firestore()
         .collection('users')
         .where('username', '==', withUser)
         .get();
     
-    if (userQuery.empty) return;
+    if (userQuery.empty) {
+        alert("User not found");
+        return;
+    }
     
     const otherUser = { id: userQuery.docs[0].id, ...userQuery.docs[0].data() };
     
@@ -943,14 +1010,14 @@ window.navigateToPM = async function(withUser) {
     
     document.getElementById('contentArea').innerHTML = html;
     
-    // Load messages realtime
+    // ========== REALTIME LISTENER ==========
     const messagesRef = firebase.firestore()
         .collection('privateMessages')
         .doc(chatId)
         .collection('messages')
         .orderBy('createdAt');
     
-    messagesRef.onSnapshot((snapshot) => {
+    const unsubscribe = messagesRef.onSnapshot((snapshot) => {
         const messagesDiv = document.getElementById('pmMessages');
         if (!messagesDiv) return;
         
@@ -970,10 +1037,11 @@ window.navigateToPM = async function(withUser) {
             messagesDiv.appendChild(msgDiv);
         });
         
+        // Auto scroll ke bawah
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     });
     
-    // Send message
+    // ========== SEND MESSAGE ==========
     document.getElementById('pmSendBtn').addEventListener('click', async () => {
         const input = document.getElementById('pmInput');
         const text = input.value.trim();
@@ -999,9 +1067,14 @@ window.navigateToPM = async function(withUser) {
             document.getElementById('pmSendBtn').click();
         }
     });
+    
+    // Simpan unsubscribe untuk cleanup (optional)
+    window.pmUnsubscribe = unsubscribe;
 };
 
 window.navigateToPMList = async function() {
+    if (!currentUser) return;
+    
     currentPage = 'pm-list';
     updateCommandBar();
     
@@ -1020,6 +1093,7 @@ window.navigateToPMList = async function() {
             if (otherUserId) {
                 const userDoc = await firebase.firestore().collection('users').doc(otherUserId).get();
                 if (userDoc.exists) {
+                    // Ambil pesan terakhir
                     const lastMsg = await doc.collection('messages')
                         .orderBy('createdAt', 'desc')
                         .limit(1)
@@ -1065,30 +1139,34 @@ window.navigateToPMList = async function() {
     document.getElementById('contentArea').innerHTML = html;
 };
 
-window.quoteReply = function(author) {
-    commandInput.value = `@${author} `;
-    commandInput.focus();
-};
-
-// ==================== SEND REPLY ====================
-sendBtn.addEventListener('click', async () => {
+// ==================== COMMAND HANDLER ====================
+sendBtn.addEventListener('click', async () => {  
     const text = commandInput.value.trim();
     if (!text || currentPage !== 'thread-view' || !currentThread) return;
     
-    await firebase.firestore().collection('posts').add({
-        threadId: currentThread.id,
-        author: currentUser.username,
-        authorId: currentUser.uid,
-        time: formatTime(),
-        content: text,
-        media: [],
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
+    // Simpan post ke subcollection
+    await firebase.firestore()
+        .collection('threads')
+        .doc(currentThread.id)
+        .collection('posts')
+        .add({
+            author: currentUser.username,
+            authorId: currentUser.uid,
+            time: formatTime(),
+            content: text,
+            media: [],
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
     
-    await firebase.firestore().collection('threads').doc(currentThread.id).update({
-        replies: firebase.firestore.FieldValue.increment(1)
-    });
+    // Update reply count di thread
+    await firebase.firestore()
+        .collection('threads')
+        .doc(currentThread.id)
+        .update({
+            replies: firebase.firestore.FieldValue.increment(1)
+        });
     
+    // Refresh thread
     navigateToThread(currentThread.id);
     commandInput.value = '';
 });
@@ -1097,27 +1175,11 @@ commandInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendBtn.click();
 });
 
-// ==================== LOGOUT HANDLER ====================
-window.addEventListener('beforeunload', () => {
-    if (currentUser) {
-        firebase.firestore().collection('users').doc(currentUser.uid).update({
-            online: false
-        });
-    }
-});
-
-// ==================== INITIAL RENDER ====================
-renderForumList();
+// ==================== INIT ====================
 
 // Make functions global
-window.showRegisterModal = showRegisterModal;
-window.showLoginModal = showLoginModal;
-window.showNewThreadModal = showNewThreadModal;
-window.showEditProfileModal = showEditProfileModal;
 window.deleteThread = deleteThread;
 window.deletePost = deletePost;
-window.navigateToProfile = navigateToProfile;
-window.navigateToGlobalChat = navigateToGlobalChat;
-window.navigateToPM = navigateToPM;
-window.navigateToPMList = navigateToPMList;
-window.quoteReply = quoteReply;
+window.showNewThreadModal = showNewThreadModal;
+window.showEditProfileModal = showEditProfileModal;
+window.showFirebaseAuthModal = showFirebaseAuthModal;
