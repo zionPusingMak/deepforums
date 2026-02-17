@@ -12,8 +12,20 @@ function formatTime() {
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function getUserByUsername(username) {
-    return users.find(u => u.username === username) || { username, avatar: '👤', bio: '' };
+async function getUserByUsername(username) {
+
+    const snap = await firebase.firestore()
+        .collection("users")
+        .where("username", "==", username)
+        .limit(1)
+        .get();
+
+    if (snap.empty) return null;
+
+    return {
+        uid: snap.docs[0].id,
+        ...snap.docs[0].data()
+    };
 }
 
 // Load sample data setelah register
