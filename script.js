@@ -1080,12 +1080,12 @@ window.navigateToPMList = async function() {
     
     // Cari semua chat yang melibatkan current user
     const chatsSnapshot = await firebase.firestore()
-        .collection('privateMessages')
-        .listDocuments();
+    .collection('privateMessages')
+    .get();
     
     const chatList = [];
     
-    for (const doc of chatsSnapshot) {
+    for (const doc of chatsSnapshot.docs) {
         const chatId = doc.id;
         if (chatId.includes(currentUser.uid)) {
             const otherUserId = chatId.split('_').find(id => id !== currentUser.uid);
