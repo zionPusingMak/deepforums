@@ -718,7 +718,7 @@ window.navigateToForum = async function(forum) {
         threads.forEach(thread => {
             const isOwnThread = thread.author === currentUser.username;
             html += `
-                <div class="thread-card" onclick="navigateToThread(${thread.id})">
+                <div class="thread-card" onclick="navigateToThread('${thread.id}')">
                     ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread(${thread.id}, '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
@@ -873,7 +873,7 @@ const userThreads = threadsSnapshot.docs.map(doc => ({
         userThreads.forEach(thread => {
             const forum = dummyForums.find(f => f.id === parseInt(thread.forumId));
             html += `
-                <div class="thread-card" onclick="navigateToThread(${thread.id})">
+                <div class="thread-card" onclick="navigateToThread('${thread.id}')">
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
                         <span class="thread-meta"><i class="fas fa-folder"></i> /${forum.name}/ · ${thread.time}</span>
