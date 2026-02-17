@@ -484,7 +484,9 @@ createThreadBtn.addEventListener('click', async () => {
         return;
     }
 
-    if (!currentUser) {
+    const user = firebase.auth().currentUser;
+    
+    if (!user) {
         alert("Please login first");
         return;
     }
@@ -494,7 +496,7 @@ createThreadBtn.addEventListener('click', async () => {
         forumId: currentForum.id,
         title: title,
         author: currentUser.username,
-        authorId: currentUser.uid,
+        authorId: user.uid,
         time: new Date().toISOString(),
         content: content,
         media: threadMedia,
