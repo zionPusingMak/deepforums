@@ -878,7 +878,9 @@ const userThreads = threadsSnapshot.docs.map(doc => ({
         html += '<div class="empty-state">No threads yet.</div>';
     } else {
         userThreads.forEach(thread => {
-            const forum = dummyForums.find(f => f.id === parseInt(thread.forumId));
+            const forum = dummyForums.find(f => f.id == thread.forumId) || {
+                name: "Unknown"
+            };
             html += `
                 <div class="thread-card" onclick="navigateToThread('${thread.id}')">
                     <div class="thread-header">
