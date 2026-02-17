@@ -925,7 +925,10 @@ window.navigateToProfile = async function(username) {
         ...doc.data()   
     }));
     
-    const isOwnProfile = currentUser.uid === user.id;
+    const isOwnProfile =
+    currentUser &&
+    currentUser.uid &&
+    currentUser.uid === user.uid;
     
     let html = `
         <div class="page-header">
