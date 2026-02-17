@@ -719,7 +719,7 @@ window.navigateToForum = async function(forum) {
             const isOwnThread = thread.author === currentUser.username;
             html += `
                 <div class="thread-card" onclick="navigateToThread('${thread.id}')">
-                    ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread(${thread.id}, '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
+                    ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread('${thread.id}', '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
                         <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.author}')">${thread.author}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
@@ -734,7 +734,14 @@ window.navigateToForum = async function(forum) {
 };
 
 window.navigateToThread = async function(threadId) {  // ← TAMBAH async
-    // Ambil thread dari Firestore
+    // Ambil thread dari firestore
+
+    if (!threadId) {
+        console.error("Thread ID missing",threadId);
+        alert("Error: Thread not found.");
+        return;
+    }
+    
     const threadDoc = await firebase.firestore()
         .collection('threads')
         .doc(threadId)
