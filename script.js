@@ -638,6 +638,17 @@ saveEditBtn.addEventListener('click', async () => {
             .doc(uid)
             .update(updateData);
 
+        // 🔥 Ambil ulang data user dari Firestore
+const freshSnap = await firebase.firestore()
+    .collection("users")
+    .doc(uid)
+    .get();
+
+currentUser = {
+    uid: uid,
+    ...freshSnap.data()
+};
+
         // Update thread lama (biar nama ikut berubah)
         const threads = await firebase.firestore()
             .collection("threads")
