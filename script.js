@@ -483,6 +483,11 @@ createThreadBtn.addEventListener('click', async () => {
         alert('Title and content are required');
         return;
     }
+
+    if (!currentUser) {
+        alert("Please login first");
+        return;
+    }
     
     // Simpan ke Firestore
     await firebase.firestore().collection('threads').add({
