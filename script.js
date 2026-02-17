@@ -44,6 +44,19 @@ firebase.auth().onAuthStateChanged(async (user) => {
     if (user) {
         // User sudah login
         console.log("User logged in:", user.email);
+
+        // AMBIL DATA USER DARI FIRESTORE
+const userDoc = await firebase.firestore()
+  .collection("users")
+  .doc(user.uid)
+  .get();
+
+if (userDoc.exists) {
+    currentUser = {
+        uid: user.uid,
+        ...userDoc.data()
+    };
+}
         
         // Cari user di dummy users berdasarkan email
         let existingUser = users.find(u => u.email === user.email);
@@ -258,6 +271,18 @@ function showFirebaseAuthModal() {
         try {
             // Buat akun Firebase
             const userCred = await firebase.auth().createUserWithEmailAndPassword(email, password);
+
+// SIMPAN USER KE FIRESTORE
+await firebase.firestore()
+  .collection("users")
+  .doc(userCred.user.uid)
+  .set({
+      username: username,
+      bio: bio,
+      avatar: selectedAvatar,
+      email: email,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
             
             // Tambah user ke dummy users (tetep pake dummy)
             const newUser = {
@@ -507,7 +532,7 @@ createThreadBtn.addEventListener('click', async () => {
     await firebase.firestore().collection('threads').add({
         forumId: currentForum.id,
         title: title,
-        authorName: currentUser.username,
+        author: currentUser.username,
         authorId: user.uid,
         time: new Date().toISOString(),
         content: content,
@@ -623,7 +648,7 @@ saveEditBtn.addEventListener('click', async () => {
 
         threads.forEach(doc => {
             batch.update(doc.ref, {
-                authorName: newUsername
+                author: newUsername
             });
         });
 
@@ -781,13 +806,13 @@ window.navigateToForum = async function(forum) {
         html += '<div class="empty-state">No threads in this forum yet.</div>';
     } else {
         threads.forEach(thread => {
-            const isOwnThread = thread.author === currentUser.username;
+            const isOwnThread = thread.authorId === currentUser.uid;
             html += `
                 <div class="thread-card" onclick="navigateToThread('${thread.id}')">
                     ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread('${thread.id}', '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
-                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.authorName}')">${thread.authorName}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
+                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.author}')">${thread.author}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
                     </div>
                     <div class="thread-content">${thread.content.substring(0, 150)}${thread.content.length > 150 ? '...' : ''}</div>
                 </div>
