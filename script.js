@@ -495,7 +495,7 @@ createThreadBtn.addEventListener('click', async () => {
     await firebase.firestore().collection('threads').add({
         forumId: currentForum.id,
         title: title,
-        author: currentUser.username,
+        authorName: currentUser.username,
         authorId: user.uid,
         time: new Date().toISOString(),
         content: content,
@@ -556,34 +556,87 @@ photoInput.addEventListener('change', (e) => {
     }
 });
 
-saveEditBtn.addEventListener('click', () => {
+saveEditBtn.addEventListener('click', async () => {
+
     const newUsername = editUsername.value.trim();
     const newBio = editBio.value.trim();
     const newPhotoUrl = photoUrl.value.trim();
-    
-    if (newUsername && newUsername !== currentUser.username) {
-        if (users.some(u => u.username === newUsername)) {
-            alert('Username already taken');
+
+    if (!newUsername) {
+        alert("Username cannot be empty");
+        return;
+    }
+
+    const uid = firebase.auth().currentUser.uid;
+
+    try {
+
+        // Cek username duplicate di Firestore
+        const checkSnap = await firebase.firestore()
+            .collection("users")
+            .where("username", "==", newUsername)
+            .get();
+
+        if (!checkSnap.empty && newUsername !== currentUser.username) {
+            alert("Username already taken");
             return;
         }
-        currentUser.username = newUsername;
-        document.getElementById('currentUsernameDisplay').textContent = newUsername;
-    }
-    
-    if (newBio) currentUser.bio = newBio;
-    
-    if (newPhotoUrl) {
-        currentUser.avatar = newPhotoUrl;
-    }
-    
-    editModal.classList.remove('active');
-    if (currentPage === 'profile' && currentProfileUser?.username === currentUser.username) {
-        navigateToProfile(currentUser.username);
-    }
-});
 
-editModal.addEventListener('click', (e) => {
-    if (e.target === editModal) editModal.classList.remove('active');
+        // Data update
+        const updateData = {
+            username: newUsername,
+            bio: newBio || "",
+        };
+
+        // Avatar dari upload / url
+        if (currentUser.avatar) {
+            updateData.avatar = currentUser.avatar;
+        } else if (newPhotoUrl) {
+            updateData.avatar = newPhotoUrl;
+        }
+
+        // Update user di Firestore
+        await firebase.firestore()
+            .collection("users")
+            .doc(uid)
+            .update(updateData);
+
+        // Update thread lama (biar nama ikut berubah)
+        const threads = await firebase.firestore()
+            .collection("threads")
+            .where("authorId", "==", uid)
+            .get();
+
+        const batch = firebase.firestore().batch();
+
+        threads.forEach(doc => {
+            batch.update(doc.ref, {
+                authorName: newUsername
+            });
+        });
+
+        await batch.commit();
+
+        // Update local cache
+        currentUser.username = newUsername;
+        currentUser.bio = newBio;
+        currentUser.avatar = updateData.avatar || null;
+
+        document.getElementById('currentUsernameDisplay').textContent = newUsername;
+
+        editModal.classList.remove('active');
+
+        alert("Profile updated successfully!");
+
+        // Refresh profile page
+        if (currentPage === 'profile') {
+            navigateToProfile(newUsername);
+        }
+
+    } catch (err) {
+        console.error(err);
+        alert("Failed to update profile");
+    }
 });
 
 // ==================== DELETE FUNCTIONS ====================
@@ -722,7 +775,7 @@ window.navigateToForum = async function(forum) {
                     ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread('${thread.id}', '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
-                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.author}')">${thread.author}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
+                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.authorName}')">${thread.authorName}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
                     </div>
                     <div class="thread-content">${thread.content.substring(0, 150)}${thread.content.length > 150 ? '...' : ''}</div>
                 </div>
@@ -825,27 +878,42 @@ window.quoteReply = function(author, preview) {
 };
 
 window.navigateToProfile = async function(username) {
-    const user = getUserByUsername(username);
-    if (!user) return;
-    
-    currentPage = 'profile';
-    currentProfileUser = user;
-    currentPMUser = null;
-    updateCommandBar();
-    
-// Ambil threads dari Firestore berdasarkan author
-const threadsSnapshot = await firebase.firestore()
-    .collection('threads')
-    .where('author', '==', username)
-    .orderBy('createdAt', 'desc')
-    .get();
 
-const userThreads = threadsSnapshot.docs.map(doc => ({ 
-    id: doc.id, 
-    ...doc.data() 
-}));
+    // Ambil user dari Firestore
+    const snap = await firebase.firestore()
+        .collection("users")
+        .where("username", "==", username)
+        .limit(1)
+        .get();
+
+    if (snap.empty) {
+        alert("User not found");
+        return;
+    }
+
+    const user = {
+        uid: snap.docs[0].id,
+        ...snap.docs[0].data()
+    };
+
+    currentPage = 'profile';  
+    currentProfileUser = user;  
+    currentPMUser = null;  
+    updateCommandBar();  
+
+    // Ambil threads berdasarkan UID
+    const threadsSnapshot = await firebase.firestore()  
+        .collection('threads')  
+        .where('authorId', '==', user.uid)  
+        .orderBy('createdAt', 'desc')  
+        .get();  
+
+    const userThreads = threadsSnapshot.docs.map(doc => ({   
+        id: doc.id,   
+        ...doc.data()   
+    }));
     
-    const isOwnProfile = currentUser.username === username;
+    const isOwnProfile = currentUser.uid === user.id;
     
     let html = `
         <div class="page-header">
