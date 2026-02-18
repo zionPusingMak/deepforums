@@ -396,7 +396,7 @@ function renderOnlineUsers() {
         const div = document.createElement('div');
         div.className = 'online-item';
         div.innerHTML = `${user.avatar || '👤'} ${user.username}`;
-        div.onclick = () => navigateToProfile(user.username);
+        div.onclick = () => navigateToProfile(currentUser.uid);
         onlineList.appendChild(div);
     });
 }
@@ -532,8 +532,8 @@ createThreadBtn.addEventListener('click', async () => {
     await firebase.firestore().collection('threads').add({
         forumId: currentForum.id,
         title: title,
-        author: currentUser.username,
-        authorId: user.uid,
+        authorName: currentUser.username,
+        authorId: currentUser.uid,
         time: new Date().toISOString(),
         content: content,
         media: threadMedia,
@@ -823,7 +823,7 @@ window.navigateToForum = async function(forum) {
                     ${isOwnThread ? `<button class="delete-btn own-post" onclick="event.stopPropagation(); deleteThread('${thread.id}', '${forum.id}')"><i class="fas fa-trash"></i> DELETE</button>` : ''}
                     <div class="thread-header">
                         <span class="thread-title">${thread.title}</span>
-                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.author}')">${thread.author}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
+                        <span class="thread-meta">by <a onclick="event.stopPropagation(); navigateToProfile('${thread.authorId}')">${thread.authorName}</a> · ${thread.time} · <i class="fas fa-reply"></i> ${thread.replies || 0}</span>
                     </div>
                     <div class="thread-content">${thread.content.substring(0, 150)}${thread.content.length > 150 ? '...' : ''}</div>
                 </div>
@@ -926,93 +926,110 @@ window.quoteReply = function(author, preview) {
 };
 
 window.navigateToProfile = async function(username) {
+window.navigateToProfile = async function(uid) {
 
-    // Ambil user dari Firestore
     const snap = await firebase.firestore()
         .collection("users")
-        .where("username", "==", username)
-        .limit(1)
+        .doc(uid)
         .get();
 
-    if (snap.empty) {
+    if (!snap.exists) {
         alert("User not found");
         return;
     }
 
     const user = {
-        uid: snap.docs[0].id,
-        ...snap.docs[0].data()
+        uid,
+        ...snap.data()
     };
 
-    currentPage = 'profile';  
-    currentProfileUser = user;  
-    currentPMUser = null;  
-    updateCommandBar();  
+    currentPage = "profile";
+    currentProfileUser = user;
+    currentPMUser = null;
 
-    // Ambil threads berdasarkan UID
-    const threadsSnapshot = await firebase.firestore()  
-        .collection('threads')  
-        .where('authorId', '==', user.uid)  
-        .orderBy('createdAt', 'desc')  
-        .get();  
+    updateCommandBar();
 
-    const userThreads = threadsSnapshot.docs.map(doc => ({   
-        id: doc.id,   
-        ...doc.data()   
+
+    // Ambil threads user
+    const threadsSnapshot = await firebase.firestore()
+        .collection("threads")
+        .where("authorId", "==", uid)
+        .orderBy("createdAt", "desc")
+        .get();
+
+    const userThreads = threadsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
     }));
-    
+
+
+    // Cek profile sendiri
     const isOwnProfile =
-    currentUser &&
-    currentUser.uid &&
-    currentUser.uid === user.uid;
-    
+        currentUser &&
+        currentUser.uid === uid;
+
+
+    // Render
     let html = `
         <div class="page-header">
-            <div style="display: flex; align-items: center; gap: 15px;">
-                <button class="back-btn" onclick="navigateToForumList()"><i class="fas fa-arrow-left"></i> BACK</button>
-                <span class="page-title"><i class="fas fa-user"></i> Profile</span>
-            </div>
+            <button class="back-btn" onclick="navigateToForumList()">⬅ Back</button>
+            <h2>Profile</h2>
         </div>
-        
+
         <div class="profile-header">
+
             <div class="profile-avatar">
-                ${user.avatar?.startsWith('data:') ? `<img src="${user.avatar}">` : user.avatar || '👤'}
+                ${
+                    user.avatar
+                        ? `<img src="${user.avatar}">`
+                        : "👤"
+                }
             </div>
+
             <div class="profile-info">
                 <div class="profile-username">${user.username}</div>
-                <div class="profile-bio">${user.bio || 'No bio yet.'}</div>
-                <div class="profile-stats"><i class="fas fa-calendar-alt"></i> Joined: 2025 · <i class="fas fa-file-alt"></i> Threads: ${userThreads.length}</div>
+                <div class="profile-bio">${user.bio || "No bio yet"}</div>
+                <div class="profile-stats">
+                    Threads: ${userThreads.length}
+                </div>
             </div>
-            ${isOwnProfile ? 
-                `<button class="edit-profile-btn" onclick="showEditProfileModal()"><i class="fas fa-edit"></i> EDIT </button>` : 
-                `<button class="send-message-btn" onclick="navigateToPM('${user.username}')"><i class="fas fa-envelope"></i> SEND MESSAGE</button>`
+
+            ${
+                isOwnProfile
+                    ? `<button onclick="showEditProfileModal()">Edit</button>`
+                    : `<button onclick="navigateToPM('${uid}')">Message</button>`
             }
+
         </div>
-        
+
         <div class="profile-threads">
-            <h3><i class="fas fa-threads"></i> Threads by ${user.username}</h3>
+            <h3>Threads</h3>
     `;
-    
+
+
     if (userThreads.length === 0) {
-        html += '<div class="empty-state">No threads yet.</div>';
+
+        html += `<p>No threads yet.</p>`;
+
     } else {
-        userThreads.forEach(thread => {
-            const forum = dummyForums.find(f => f.id == thread.forumId) || {
-                name: "Unknown"
-            };
+
+        userThreads.forEach(t => {
+
             html += `
-                <div class="thread-card" onclick="navigateToThread('${thread.id}')">
-                    <div class="thread-header">
-                        <span class="thread-title">${thread.title}</span>
-                        <span class="thread-meta"><i class="fas fa-folder"></i> /${forum.name}/ · ${thread.time}</span>
-                    </div>
-                    <div class="thread-content">${thread.content.substring(0, 100)}...</div>
+                <div class="thread-card"
+                    onclick="navigateToThread('${t.id}')">
+
+                    <h4>${t.title}</h4>
+                    <p>${t.content.substring(0,100)}...</p>
+
                 </div>
             `;
         });
     }
-    
-    html += '</div>';
+
+
+    html += `</div>`;
+
     contentArea.innerHTML = html;
 };
 
@@ -1105,7 +1122,7 @@ window.navigateToGlobalChat = function() {
 
 window.navigateToPM = async function(withUser) {
     if (!currentUser) return;
-    if (withUser === currentUser.username) return;
+    if (withUser === currentUser.uid) return;
     
     // Cari user tujuan di Firestore
     const userQuery = await firebase.firestore()
@@ -1285,7 +1302,7 @@ sendBtn.addEventListener('click', async () => {
         .doc(currentThread.id)
         .collection('posts')
         .add({
-            author: currentUser.username,
+            authorName: currentUser.username,
             authorId: currentUser.uid,
             time: formatTime(),
             content: text,
