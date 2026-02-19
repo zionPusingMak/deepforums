@@ -1,6 +1,6 @@
 // ===== FIREBASE SETUP =====
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getDatabase, ref, push, set, onValue, onChildAdded, serverTimestamp, get, update, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getDatabase, ref, push, set, onValue, onChildAdded, serverTimestamp, get, update, remove, query, orderByChild, limitToLast, startAt } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 const firebaseConfig = {
     apiKey: "AIzaSyAFceErp5Ba4IeeRM_41wgDzxG3P92_zuE",
@@ -155,87 +155,70 @@ function _recalcDMBadge() {
     }
 }
 
-// Listen global chat — HANYA hitung pesan yang dateng SETELAH lastReadKey
+// Listen global chat — hanya pesan dengan timestamp > APP_START_TIME
+// startAt memastikan Firebase hanya kirim pesan baru, bukan existing
+const APP_START_TIME = Date.now();
+
 function listenGlobalBadge() {
-    // Ambil dulu key terakhir yang ada saat ini (baseline), baru pasang listener
-    get(query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(1))).then(snap => {
-        // Kalau belum pernah buka global chat, set baseline = key terakhir sekarang
-        if (!_lastReadKey["global"]) {
-            snap.forEach(child => { _lastReadKey["global"] = child.key; });
-            _saveLastReadKey();
+    // Query hanya pesan yang timestamp-nya >= saat app dibuka
+    const chatRef = query(
+        ref(db, "global_chat"),
+        orderByChild("timestamp"),
+        startAt(APP_START_TIME)
+    );
+
+    onChildAdded(chatRef, (child) => {
+        const m = child.val();
+        if (m.userId === MY_USER_ID) return; // pesan sendiri, skip
+
+        // Kalau global chat sedang dibuka, ga perlu badge
+        if (document.getElementById("globalChatView").style.display !== "none") {
+            return;
         }
 
-        // Sekarang listen untuk pesan BARU saja (onChildAdded akan fire existing dulu,
-        // lalu fire lagi tiap ada yang baru)
-        const chatRef = query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(200));
-        let initialLoadDone = false;
-        let initialKeys = new Set();
-
-        onChildAdded(chatRef, (child) => {
-            if (!initialLoadDone) {
-                // Semua yang dateng sebelum initialLoadDone = existing data, skip
-                initialKeys.add(child.key);
-                return;
-            }
-            // Pesan baru yang beneran baru dateng
-            const m = child.val();
-            if (m.userId === MY_USER_ID) return; // pesan sendiri, skip
-            if (child.key === _lastReadKey["global"]) return; // sudah dibaca
-
-            // Kalau global chat sedang dibuka, jangan tambah badge
-            if (document.getElementById("globalChatView").style.display !== "none") {
-                markGlobalRead();
-                return;
-            }
-
-            _badgeCount.global++;
-            showBadge("global", _badgeCount.global);
-        });
-
-        // Tandai initial load selesai setelah microtask queue kosong
-        setTimeout(() => { initialLoadDone = true; }, 0);
+        _badgeCount.global++;
+        showBadge("global", _badgeCount.global);
     });
 }
 
-// Listen DM — hanya hitung pesan baru dari orang lain
+// Listen DM — hanya pesan baru dari orang lain setelah app load
 function listenDMBadge() {
-    const dmsRef = ref(db, "dms");
-    // Track initialLoad per DM room
-    const initialDone = {};
+    // Watch daftar DM rooms dulu, baru pasang listener per room
+    const registeredRooms = new Set();
 
-    onValue(dmsRef, snap => {
-        // Kalau ada room DM baru yang melibatkan kita, pasang listener
+    onValue(ref(db, "dms"), snap => {
         const data = snap.val() || {};
         Object.keys(data).forEach(roomKey => {
-            if (initialDone[roomKey] !== undefined) return; // sudah dipasang
+            if (registeredRooms.has(roomKey)) return; // sudah dipasang listener
+
             const parts = roomKey.split("__");
             if (!parts.includes(currentUser.username)) return;
 
+            registeredRooms.add(roomKey);
             const other = parts.find(u => u !== currentUser.username);
-            initialDone[roomKey] = false;
 
-            const roomRef = query(ref(db, `dms/${roomKey}`), orderByChild("timestamp"), limitToLast(200));
+            // startAt APP_START_TIME → hanya pesan yang dateng setelah app dibuka
+            const roomRef = query(
+                ref(db, `dms/${roomKey}`),
+                orderByChild("timestamp"),
+                startAt(APP_START_TIME)
+            );
 
             onChildAdded(roomRef, (child) => {
-                if (!initialDone[roomKey]) return; // skip existing messages
-
                 const m = child.val();
                 // Skip pesan sendiri
                 if (m.userId === MY_USER_ID) return;
                 if (!m.userId && m.author === currentUser.username) return;
 
-                // Kalau DM dengan orang ini sedang dibuka, jangan badge
+                // Kalau lagi buka DM dengan orang ini, ga perlu badge
                 if (currentDMUser === other &&
                     document.getElementById("dmConvoView").style.display !== "none") {
-                    markDMRead(other);
                     return;
                 }
 
                 _badgeCount.dm++;
                 showBadge("dm", _badgeCount.dm);
             });
-
-            setTimeout(() => { initialDone[roomKey] = true; }, 0);
         });
     });
 }
@@ -293,8 +276,7 @@ window.addEventListener("beforeunload", () => {
 // ===== FORUMS =====
 const forums = [
     { id: "general", name: "general", desc: "General discussion" },
-    { id: "gore",    name: "gore",    desc: "Things that should you never see" },
-    { id: "exploit", name: "exploit", desc: "Nothing is impossible" },
+    { id: "tech",    name: "tech",    desc: "Technology & coding" },
     { id: "random",  name: "random",  desc: "Anything goes here" }
 ];
 
