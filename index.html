@@ -54,7 +54,9 @@
 <!-- THREAD VIEW -->
 <div id="threadView" style="display:none;">
     <div class="thread-unified-block">
-        <div id="threadContent"></div>
+        <!-- BUG FIX #2: renamed from "threadContent" to "threadPostContent"
+             to avoid collision with the modal textarea -->
+        <div id="threadPostContent"></div>
         <div id="commentSection">
             <h3 class="comment-title">Comments</h3>
             <div id="commentList"></div>
@@ -124,17 +126,19 @@
 </div>
 
 <!-- NEW THREAD MODAL -->
+<!-- BUG FIX #2: all input IDs now have unique names ending in "Input"
+     so they never collide with display elements -->
 <div id="newThreadModal" class="modal">
     <div class="modal-box">
         <h2>New Thread</h2>
         <label>Title</label>
-        <input type="text" id="threadTitle" placeholder="Thread title...">
+        <input type="text" id="threadTitleInput" placeholder="Thread title...">
         <label>Content</label>
-        <textarea id="threadContent" style="height:120px;" placeholder="What's on your mind?"></textarea>
+        <textarea id="threadBodyInput" style="height:120px;" placeholder="What's on your mind?"></textarea>
         <label>Image (optional)</label>
-        <input type="file" id="threadImage" accept="image/*">
+        <input type="file" id="threadImageInput" accept="image/*">
         <label>Video URL (optional)</label>
-        <input type="text" id="threadVideo" placeholder="https://youtube.com/...">
+        <input type="text" id="threadVideoInput" placeholder="https://youtube.com/...">
         <div class="modal-actions">
             <button id="cancelThreadBtn">Cancel</button>
             <button id="saveThreadBtn">Post</button>
