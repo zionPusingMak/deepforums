@@ -39,125 +39,161 @@ function listenUserIdMap() {
     });
 }
 
-// ===== FFMPEG VIDEO COMPRESSOR =====
-// Pakai @ffmpeg/ffmpeg@0.11.x — versi lama yang single-file, no chunk splitting,
-// no worker spawn issue, works langsung di browser tanpa self-hosting.
-
-let _ffmpegInstance = null;
-let _ffmpegLoaded   = false;
-let _ffmpegLoading  = false;
-
-async function loadFFmpeg() {
-    if (_ffmpegLoaded) return _ffmpegInstance;
-    if (_ffmpegLoading) {
-        while (_ffmpegLoading) await new Promise(r => setTimeout(r, 80));
-        return _ffmpegInstance;
-    }
-
-    _ffmpegLoading = true;
-    showSendingIndicator(true);
-
-    try {
-        await _loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.11.2/dist/ffmpeg.min.js");
-
-        const { createFFmpeg } = window.FFmpeg;
-        _ffmpegInstance = createFFmpeg({
-            corePath: "https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js",
-            mainName: "main",
-            log: false,
-        });
-
-        await _ffmpegInstance.load();
-
-        _ffmpegLoaded  = true;
-        _ffmpegLoading = false;
-        return _ffmpegInstance;
-
-    } catch (e) {
-        _ffmpegLoading = false;
-        showSendingIndicator(false);
-        throw new Error("Gagal load video compressor: " + e.message);
-    }
-}
-
-function _loadScript(src) {
-    return new Promise((resolve, reject) => {
-        if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-        const s   = document.createElement("script");
-        s.src     = src;
-        s.onload  = resolve;
-        s.onerror = () => reject(new Error("Gagal load script: " + src));
-        document.head.appendChild(s);
-    });
-}
+// ===== VIDEO COMPRESSOR (Browser-Native, No WASM) =====
+// Mirip cara WA/IG/TikTok compress: render ke canvas + MediaRecorder
+// Target: < 28MB, max 480p, 800kbps video, 96kbps audio
 
 async function compressVideo(file) {
-    const MAX_BYTES = 28 * 1024 * 1024;
+    const MAX_BYTES  = 28 * 1024 * 1024;
+    const MAX_WIDTH  = 854;   // 480p landscape / 480p portrait
+    const MAX_HEIGHT = 480;
+    const FPS        = 24;
+    const VBITRATE   = 1_200_000; // 1.2 Mbps — hasil oke, file kecil
+
+    // Kalau udah kecil, skip compress
     if (file.size <= 10 * 1024 * 1024) return file;
 
     showSendingIndicator(true);
 
-    try {
-        const ff  = await loadFFmpeg();
-        const ext = (file.name.split(".").pop() || "mp4").toLowerCase();
-        const inName  = `input.${ext}`;
-        const outName = "output.mp4";
+    return new Promise((resolve, reject) => {
+        const video = document.createElement("video");
+        video.src     = URL.createObjectURL(file);
+        video.muted   = true;
+        video.preload = "metadata";
 
-        ff.FS("writeFile", inName, new Uint8Array(await file.arrayBuffer()));
+        video.onerror = () => {
+            showSendingIndicator(false);
+            reject(new Error("Gagal baca video. Format tidak didukung."));
+        };
 
-        // Pass 1 — CRF 28, max 720p
-        await ff.run(
-            "-i", inName,
-            "-c:v", "libx264", "-crf", "28", "-preset", "fast",
-            "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            "-y", outName
-        );
+        video.onloadedmetadata = () => {
+            // Hitung dimensi baru, jaga aspect ratio
+            let w = video.videoWidth  || 640;
+            let h = video.videoHeight || 480;
+            const ratio = w / h;
 
-        let data = ff.FS("readFile", outName);
-        let compressed = new File([data.buffer], "compressed.mp4", { type: "video/mp4" });
-        console.log(`[ffmpeg] ${(file.size/1024/1024).toFixed(1)}MB → ${(compressed.size/1024/1024).toFixed(1)}MB`);
+            if (w > MAX_WIDTH || h > MAX_HEIGHT) {
+                if (ratio > 1) {
+                    w = MAX_WIDTH;
+                    h = Math.round(MAX_WIDTH / ratio);
+                } else {
+                    h = MAX_HEIGHT;
+                    w = Math.round(MAX_HEIGHT * ratio);
+                }
+            }
 
-        try { ff.FS("unlink", inName);  } catch(_) {}
-        try { ff.FS("unlink", outName); } catch(_) {}
+            // Buat canvas sebagai "encoder"
+            const canvas  = document.createElement("canvas");
+            canvas.width  = w % 2 === 0 ? w : w - 1; // harus genap untuk codec
+            canvas.height = h % 2 === 0 ? h : h - 1;
+            const ctx     = canvas.getContext("2d");
 
-        // Pass 2 — kalau masih gede, 480p lebih agresif
-        if (compressed.size > MAX_BYTES) {
-            ff.FS("writeFile", "input2.mp4", new Uint8Array(await compressed.arrayBuffer()));
-            await ff.run(
-                "-i", "input2.mp4",
-                "-c:v", "libx264", "-crf", "35", "-preset", "fast",
-                "-vf", "scale='min(854,iw)':'min(480,ih)':force_original_aspect_ratio=decrease",
-                "-c:a", "aac", "-b:a", "96k",
-                "-movflags", "+faststart",
-                "-y", "output2.mp4"
-            );
-            const data2 = ff.FS("readFile", "output2.mp4");
-            compressed  = new File([data2.buffer], "compressed.mp4", { type: "video/mp4" });
-            console.log(`[ffmpeg] pass2 → ${(compressed.size/1024/1024).toFixed(1)}MB`);
-            try { ff.FS("unlink", "input2.mp4");  } catch(_) {}
-            try { ff.FS("unlink", "output2.mp4"); } catch(_) {}
-        }
+            // Pilih codec terbaik yang tersedia di browser
+            const mimeOptions = [
+                "video/mp4;codecs=avc1",
+                "video/webm;codecs=vp9,opus",
+                "video/webm;codecs=vp8,opus",
+                "video/webm",
+            ];
+            const mimeType = mimeOptions.find(m => MediaRecorder.isTypeSupported(m)) || "video/webm";
 
-        if (compressed.size > MAX_BYTES) {
-            throw new Error(`Video masih terlalu besar setelah kompresi (${(compressed.size/1024/1024).toFixed(1)}MB). Coba video lebih pendek.`);
-        }
+            // Capture stream dari canvas
+            const canvasStream = canvas.captureStream(FPS);
+            const chunks       = [];
 
-        return compressed;
+            // Setup audio — sambungkan audio dari video ke stream
+            let audioStream = null;
+            try {
+                const audioCtx  = new (window.AudioContext || window.webkitAudioContext)();
+                const src       = audioCtx.createMediaElementSource(video);
+                const dest      = audioCtx.createMediaStreamDestination();
+                src.connect(dest);
+                src.connect(audioCtx.destination);
+                audioStream = dest.stream;
+                audioStream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
+            } catch (_) {
+                // Kalau audio gagal, lanjut tanpa audio (edge case)
+            }
 
-    } finally {
-        showSendingIndicator(false);
-    }
+            const recorder = new MediaRecorder(canvasStream, {
+                mimeType,
+                videoBitsPerSecond: VBITRATE,
+                audioBitsPerSecond: 96_000,
+            });
+
+            recorder.ondataavailable = e => {
+                if (e.data && e.data.size > 0) chunks.push(e.data);
+            };
+
+            recorder.onstop = () => {
+                URL.revokeObjectURL(video.src);
+                showSendingIndicator(false);
+
+                const ext  = mimeType.includes("mp4") ? "mp4" : "webm";
+                const type = mimeType.split(";")[0];
+                const blob = new Blob(chunks, { type });
+                const out  = new File([blob], `compressed.${ext}`, { type });
+
+                console.log(`[compress] ${(file.size/1024/1024).toFixed(1)}MB → ${(out.size/1024/1024).toFixed(1)}MB (${mimeType})`);
+
+                if (out.size > MAX_BYTES) {
+                    reject(new Error(`Video masih terlalu besar setelah kompresi (${(out.size/1024/1024).toFixed(1)}MB). Coba video yang lebih pendek.`));
+                    return;
+                }
+                resolve(out);
+            };
+
+            recorder.onerror = e => {
+                showSendingIndicator(false);
+                reject(new Error("Kompresi gagal: " + e.error?.message));
+            };
+
+            // Draw frame-by-frame dari video ke canvas
+            let animFrame;
+            const drawFrame = () => {
+                if (!video.paused && !video.ended) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                }
+                animFrame = requestAnimationFrame(drawFrame);
+            };
+
+            video.onplay  = () => {
+                recorder.start(200); // collect chunks tiap 200ms
+                drawFrame();
+            };
+            video.onended = () => {
+                cancelAnimationFrame(animFrame);
+                if (recorder.state !== "inactive") recorder.stop();
+            };
+            video.onpause = () => {
+                // Kalau video pause sebelum ended (edge case durasi pendek)
+                if (video.ended) return;
+                cancelAnimationFrame(animFrame);
+                if (recorder.state !== "inactive") recorder.stop();
+            };
+
+            video.play().catch(err => {
+                showSendingIndicator(false);
+                reject(new Error("Gagal play video untuk kompresi: " + err.message));
+            });
+        };
+    });
 }
 
 // ===== MEDIA UPLOAD =====
-// Auto-compress video sebelum upload ke CDN
 async function uploadMedia(file) {
     let fileToUpload = file;
 
     if (file.type.startsWith("video/")) {
-        fileToUpload = await compressVideo(file);
+        try {
+            fileToUpload = await compressVideo(file);
+        } catch(e) {
+            // Kalau compress gagal, coba upload original (mungkin udah kecil)
+            console.warn("[compress] gagal, upload original:", e.message);
+            if (file.size > 28 * 1024 * 1024) {
+                throw new Error("Video terlalu besar dan gagal dikompres. Coba video yang lebih pendek.");
+            }
+        }
     }
 
     try {
@@ -414,7 +450,7 @@ function hideAllViews() {
 }
 
 // ===== SENDING INDICATOR =====
-function showSendingIndicator(show) {
+function showSendingIndicator(show, label) {
     let el = document.getElementById("sendingIndicator");
     if (!el) {
         el = document.createElement("div");
@@ -437,6 +473,7 @@ function showSendingIndicator(show) {
         ].join(";");
 
         const dot = document.createElement("span");
+        dot.id = "sendingDot";
         dot.style.cssText = [
             "width:7px",
             "height:7px",
@@ -446,11 +483,12 @@ function showSendingIndicator(show) {
             "animation:sendPulse 0.9s ease-in-out infinite"
         ].join(";");
 
-        const label = document.createElement("span");
-        label.textContent = "Uploading...";
+        const lbl = document.createElement("span");
+        lbl.id = "sendingLabel";
+        lbl.textContent = "Uploading...";
 
         el.appendChild(dot);
-        el.appendChild(label);
+        el.appendChild(lbl);
         document.body.appendChild(el);
 
         if (!document.getElementById("sendPulseStyle")) {
@@ -460,6 +498,12 @@ function showSendingIndicator(show) {
             document.head.appendChild(style);
         }
     }
+
+    if (label) {
+        const lbl = document.getElementById("sendingLabel");
+        if (lbl) lbl.textContent = label;
+    }
+
     el.style.display = show ? "flex" : "none";
 }
 
@@ -546,7 +590,7 @@ async function sendGlobalMessage(text, file) {
     let mediaType = null;
 
     if (file) {
-        showSendingIndicator(true);
+        showSendingIndicator(true, file.type.startsWith("video/") ? "Compressing..." : "Uploading...");
         try {
             mediaUrl  = await uploadMedia(file);
             mediaType  = file.type.startsWith("video/") ? "video/mp4" : file.type;
@@ -684,7 +728,7 @@ async function sendDMMessage(text, file) {
     let mediaType = null;
 
     if (file) {
-        showSendingIndicator(true);
+        showSendingIndicator(true, file.type.startsWith("video/") ? "Compressing..." : "Uploading...");
         try {
             mediaUrl  = await uploadMedia(file);
             mediaType  = file.type.startsWith("video/") ? "video/mp4" : file.type;
@@ -1008,7 +1052,6 @@ function renderThreadView(threadId, forumId) {
         postDiv.appendChild(titleEl);
         postDiv.appendChild(bodyEl);
 
-        // Multi-media format
         if (thread.mediaItems && thread.mediaItems.length > 0) {
             const grid = document.createElement("div");
             grid.className = "thread-media-grid";
@@ -1029,7 +1072,7 @@ function renderThreadView(threadId, forumId) {
             });
             postDiv.appendChild(grid);
         }
-        // Legacy single image/video support
+
         if (!thread.mediaItems) {
             if (thread.imageUrl) {
                 const img = document.createElement("img");
@@ -1050,7 +1093,6 @@ function renderThreadView(threadId, forumId) {
         threadContent.appendChild(postDiv);
         attachUserClicks(threadContent);
 
-        // ===== COMMENTS =====
         const commentList = document.getElementById("commentList");
         commentList.innerHTML = "";
 
@@ -1109,12 +1151,10 @@ function renderThreadView(threadId, forumId) {
     });
     activeListeners.push(() => unsub());
 
-    // Re-wire submit button (clone to remove old listeners)
     const submitBtn  = document.getElementById("submitComment");
     const newSubmit  = submitBtn.cloneNode(true);
     submitBtn.parentNode.replaceChild(newSubmit, submitBtn);
 
-    // Re-wire file input
     const fileInput    = document.getElementById("commentFile");
     const newFileInput = fileInput.cloneNode(true);
     fileInput.parentNode.replaceChild(newFileInput, fileInput);
@@ -1146,7 +1186,7 @@ function renderThreadView(threadId, forumId) {
         let mediaType = null;
 
         if (pendingCommentFile) {
-            showSendingIndicator(true);
+            showSendingIndicator(true, "Uploading...");
             try {
                 mediaUrl  = await uploadMedia(pendingCommentFile);
                 mediaType = pendingCommentFile.type;
@@ -1171,29 +1211,6 @@ function renderThreadView(threadId, forumId) {
             timestamp: serverTimestamp()
         });
     });
-}
-
-// ===== VIDEO URL CONVERTER =====
-function convertVideoUrl(url) {
-    try {
-        if (!url) return null;
-        if (!url.startsWith("http")) url = "https://" + url;
-        const u = new URL(url);
-        if (u.protocol !== "https:") return null;
-        let vid = null;
-        if (u.hostname.includes("youtube.com")) {
-            vid = u.searchParams.get("v");
-            if (!vid) {
-                const parts = u.pathname.split("/").filter(Boolean);
-                const idx   = parts.findIndex(p => p === "shorts" || p === "embed" || p === "v");
-                if (idx !== -1 && parts[idx + 1]) vid = parts[idx + 1];
-            }
-        } else if (u.hostname.includes("youtu.be")) {
-            vid = u.pathname.split("/").filter(Boolean)[0];
-        }
-        if (!vid || !/^[\w-]{5,20}$/.test(vid)) return null;
-        return `https://www.youtube.com/embed/${vid}`;
-    } catch { return null; }
 }
 
 // ===== SIDEBAR =====
@@ -1273,7 +1290,6 @@ newThreadBtn.addEventListener("click", () => {
 
 cancelThreadBtn.addEventListener("click", () => newThreadModal.classList.remove("active"));
 
-// ===== THREAD MODAL MULTI-MEDIA (max 3) =====
 let threadPendingFiles = [];
 
 function renderThreadMediaPreview() {
@@ -1333,10 +1349,9 @@ saveThreadBtn.addEventListener("click", async () => {
     if (threadPendingFiles.length > 0) {
         for (const file of threadPendingFiles) {
             const isVideo = file.type.startsWith("video/");
-            showSendingIndicator(true);
+            showSendingIndicator(true, isVideo ? "Compressing video..." : "Uploading...");
             try {
                 const url = await uploadMedia(file);
-                // Kalau video, mediaType jadi video/mp4 (hasil compress)
                 mediaItems.push({ url, type: isVideo ? "video/mp4" : file.type });
             } catch(e) {
                 alert("Upload gagal: " + e.message);
@@ -1431,7 +1446,7 @@ avatarInput.addEventListener("change", async e => {
     const file = e.target.files[0];
     if (!file || !file.type.startsWith("image/")) return;
 
-    showSendingIndicator(true);
+    showSendingIndicator(true, "Uploading avatar...");
     try {
         const url = await uploadMedia(file);
         currentUser.avatar = url;
