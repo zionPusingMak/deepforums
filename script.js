@@ -41,10 +41,12 @@ function listenUserIdMap() {
 
 // ===== MEDIA UPLOAD =====
 async function uploadMedia(file) {
+    // CDN yupra: 1 file per request, field name "files"
     const formData = new FormData();
-    // Pastikan filename ada dan ekstensinya benar
-    const ext = file.name.split(".").pop() || (file.type.split("/")[1]) || "bin";
-    const filename = file.name || `upload.${ext}`;
+    const ext = (file.name && file.name.includes("."))
+        ? file.name.split(".").pop()
+        : (file.type.split("/")[1] || "bin");
+    const filename = (file.name && file.name !== "") ? file.name : ("upload." + ext);
     formData.append("files", file, filename);
 
     const res = await fetch("https://cdn.yupra.my.id/upload", {
@@ -52,10 +54,13 @@ async function uploadMedia(file) {
         body: formData
     });
 
-    if (!res.ok) throw new Error(`CDN error: ${res.status}`);
-    const data = await res.json();
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch(e) { throw new Error("CDN response bukan JSON: " + text.slice(0, 120)); }
+
     if (!data.success || !data.files || data.files.length === 0) {
-        throw new Error("Upload ke CDN gagal: " + JSON.stringify(data));
+        throw new Error("Upload gagal: " + (data.message || text.slice(0, 120)));
     }
     return "https://cdn.yupra.my.id" + data.files[0].url;
 }
