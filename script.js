@@ -18,6 +18,30 @@ const db  = getDatabase(app);
 // ===== XSS PROTECTION =====
 // All user data rendered via textContent or DOM API — never raw innerHTML with user input.
 
+// ===== REALTIME USERNAME CACHE =====
+// Maps userId → latest username, listened from Firebase `userIds/` node.
+// When a user renames, all visible author spans update instantly in the DOM.
+const userIdToUsername = {};
+
+function listenUserIdMap() {
+    onValue(ref(db, "userIds"), snap => {
+        const data = snap.val() || {};
+        Object.entries(data).forEach(([uid, uname]) => {
+            userIdToUsername[uid] = uname;
+        });
+        // Update all currently-rendered author spans in the DOM
+        document.querySelectorAll("[data-userid]").forEach(el => {
+            const uid = el.dataset.userid;
+            if (uid && userIdToUsername[uid]) {
+                el.textContent = userIdToUsername[uid];
+                if (el.classList.contains("clickable-user")) {
+                    el.dataset.username = userIdToUsername[uid];
+                }
+            }
+        });
+    });
+}
+
 // ===== MEDIA UPLOAD — langsung dari browser ke catbox.moe =====
 // Bypass Vercel serverless (limit 4.5MB) dengan upload direct ke catbox.moe
 async function uploadMedia(file) {
@@ -158,8 +182,11 @@ function buildChatMsgEl(m, showClickableAuthor) {
 
     const authorSpan = document.createElement("span");
     authorSpan.className = "chat-author" + (showClickableAuthor ? " clickable-user" : "");
-    authorSpan.textContent = m.author;
-    if (showClickableAuthor) authorSpan.dataset.username = m.author;
+    // Use cached username if available, fallback to stored author
+    const displayName = (m.userId && userIdToUsername[m.userId]) ? userIdToUsername[m.userId] : m.author;
+    authorSpan.textContent = displayName;
+    if (m.userId) authorSpan.dataset.userid = m.userId;
+    if (showClickableAuthor) authorSpan.dataset.username = displayName;
 
     const timeSpan = document.createElement("span");
     timeSpan.className = "chat-time";
@@ -980,15 +1007,40 @@ saveProfileBtn.addEventListener("click", async () => {
     const newBio  = document.getElementById("editBio").value.trim();
     if (!newName) { alert("Username required"); return; }
 
+    const oldName = currentUser.username;
+
+    // Cek apakah username sudah dipakai orang lain
+    if (newName !== oldName) {
+        const existing = await get(ref(db, `profiles/${newName}`));
+        if (existing.exists()) {
+            const existingUserId = existing.val().userId;
+            // Kalau ada profil dengan nama itu tapi bukan punya kita → tolak
+            if (!existingUserId || existingUserId !== MY_USER_ID) {
+                alert(`Username "@${newName}" sudah dipakai. Coba username lain.`);
+                return;
+            }
+        }
+    }
+
     currentUser.username = newName;
     currentUser.bio = newBio;
     localStorage.setItem("user", JSON.stringify(currentUser));
 
+    // Hapus profile lama kalau username berubah
+    if (newName !== oldName) {
+        await remove(ref(db, `profiles/${oldName}`));
+    }
+
+    // Update profile node — simpan userId supaya bisa verifikasi kepemilikan
     await set(ref(db, `profiles/${newName}`), {
         username: newName,
         bio: newBio,
-        avatar: currentUser.avatar || null
+        avatar: currentUser.avatar || null,
+        userId: MY_USER_ID
     });
+
+    // Update userId → username mapping so all rendered messages update in realtime
+    await set(ref(db, `userIds/${MY_USER_ID}`), newName);
 
     await heartbeat();
     renderUser();
@@ -1022,6 +1074,12 @@ set(ref(db, `profiles/${currentUser.username}`), {
 
 // Start online presence listener (always active)
 listenOnlineUsers();
+
+// Start realtime username cache (always active)
+listenUserIdMap();
+
+// Register this device's userId → username on load
+set(ref(db, `userIds/${MY_USER_ID}`), currentUser.username);
 
 history.replaceState({ page: "home" }, "", "#/");
 renderUser();
