@@ -50,44 +50,38 @@ let _ffmpegLoading  = false;
 async function loadFFmpeg() {
     if (_ffmpegLoaded) return _ffmpegInstance;
 
-    // Kalau sedang loading di tab lain / call sebelumnya, tunggu
     if (_ffmpegLoading) {
         while (_ffmpegLoading) await new Promise(r => setTimeout(r, 80));
         return _ffmpegInstance;
     }
 
     _ffmpegLoading = true;
-    showSendingIndicator(true, "Loading video compressor...");
+    showSendingIndicator(true);
 
     try {
-        // Dynamic import ffmpeg.wasm dari CDN
         const { FFmpeg } = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js");
         const { toBlobURL, fetchFile: _fetchFile } = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js");
 
-        // Simpan fetchFile ke scope module
         window.__ffFetchFile = _fetchFile;
-
         _ffmpegInstance = new FFmpeg();
 
-        // Progress logger (opsional — uncomment kalau mau debug)
-        // _ffmpegInstance.on("log", ({ message }) => console.log("[ffmpeg]", message));
-
-        // Coba load multi-thread core dulu (lebih cepat, butuh SharedArrayBuffer)
-        // Fallback ke single-thread kalau GA tersedia (GitHub Pages, dll)
+        // Semua resource (termasuk worker.js) wajib di-toBlobURL-kan
+        // supaya tidak kena block COEP di Vercel / origin yang strict.
         let coreLoaded = false;
 
         if (typeof SharedArrayBuffer !== "undefined") {
             try {
                 const mtBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
                 await _ffmpegInstance.load({
-                    coreURL: await toBlobURL(`${mtBase}/ffmpeg-core.js`,   "text/javascript"),
-                    wasmURL: await toBlobURL(`${mtBase}/ffmpeg-core.wasm`, "application/wasm"),
+                    coreURL:   await toBlobURL(`${mtBase}/ffmpeg-core.js`,        "text/javascript"),
+                    wasmURL:   await toBlobURL(`${mtBase}/ffmpeg-core.wasm`,      "application/wasm"),
                     workerURL: await toBlobURL(`${mtBase}/ffmpeg-core.worker.js`, "text/javascript"),
                 });
                 coreLoaded = true;
-                console.log("[ffmpeg] multi-thread core loaded");
             } catch (e) {
-                console.warn("[ffmpeg] multi-thread load failed, fallback to ST:", e.message);
+                console.warn("[ffmpeg] MT load failed, trying ST:", e.message);
+                // Reset instance supaya bisa di-load ulang dengan ST
+                _ffmpegInstance = new FFmpeg();
             }
         }
 
@@ -97,7 +91,6 @@ async function loadFFmpeg() {
                 coreURL: await toBlobURL(`${stBase}/ffmpeg-core.js`,   "text/javascript"),
                 wasmURL: await toBlobURL(`${stBase}/ffmpeg-core.wasm`, "application/wasm"),
             });
-            console.log("[ffmpeg] single-thread core loaded");
         }
 
         _ffmpegLoaded  = true;
@@ -127,7 +120,7 @@ async function compressVideo(file) {
         return file;
     }
 
-    showSendingIndicator(true, "Compressing video...");
+    showSendingIndicator(true);
 
     try {
         const ff = await loadFFmpeg();
@@ -164,7 +157,7 @@ async function compressVideo(file) {
 
         // --- Pass 2: kalau masih > 28MB, compress lebih agresif ---
         if (compressed.size > MAX_UPLOAD_BYTES) {
-            showSendingIndicator(true, "Compressing harder...");
+            showSendingIndicator(true);
 
             const in2Name  = "input2.mp4";
             const out2Name = "output2.mp4";
@@ -471,8 +464,7 @@ function hideAllViews() {
 }
 
 // ===== SENDING INDICATOR =====
-// Diletakkan sebelum fungsi lain yang memanggilnya
-function showSendingIndicator(show, message = "Uploading...") {
+function showSendingIndicator(show) {
     let el = document.getElementById("sendingIndicator");
     if (!el) {
         el = document.createElement("div");
@@ -494,9 +486,7 @@ function showSendingIndicator(show, message = "Uploading...") {
             "align-items:center"
         ].join(";");
 
-        // Spinner dot
         const dot = document.createElement("span");
-        dot.id = "sendingDot";
         dot.style.cssText = [
             "width:7px",
             "height:7px",
@@ -507,13 +497,12 @@ function showSendingIndicator(show, message = "Uploading...") {
         ].join(";");
 
         const label = document.createElement("span");
-        label.id = "sendingLabel";
+        label.textContent = "Uploading...";
 
         el.appendChild(dot);
         el.appendChild(label);
         document.body.appendChild(el);
 
-        // Inject keyframe kalau belum ada
         if (!document.getElementById("sendPulseStyle")) {
             const style = document.createElement("style");
             style.id = "sendPulseStyle";
@@ -521,10 +510,6 @@ function showSendingIndicator(show, message = "Uploading...") {
             document.head.appendChild(style);
         }
     }
-
-    const labelEl = document.getElementById("sendingLabel");
-    if (labelEl) labelEl.textContent = message;
-
     el.style.display = show ? "flex" : "none";
 }
 
@@ -611,7 +596,7 @@ async function sendGlobalMessage(text, file) {
     let mediaType = null;
 
     if (file) {
-        showSendingIndicator(true, file.type.startsWith("video/") ? "Compressing video..." : "Uploading...");
+        showSendingIndicator(true);
         try {
             mediaUrl  = await uploadMedia(file);
             mediaType  = file.type.startsWith("video/") ? "video/mp4" : file.type;
@@ -749,7 +734,7 @@ async function sendDMMessage(text, file) {
     let mediaType = null;
 
     if (file) {
-        showSendingIndicator(true, file.type.startsWith("video/") ? "Compressing video..." : "Uploading...");
+        showSendingIndicator(true);
         try {
             mediaUrl  = await uploadMedia(file);
             mediaType  = file.type.startsWith("video/") ? "video/mp4" : file.type;
@@ -1211,7 +1196,7 @@ function renderThreadView(threadId, forumId) {
         let mediaType = null;
 
         if (pendingCommentFile) {
-            showSendingIndicator(true, "Uploading...");
+            showSendingIndicator(true);
             try {
                 mediaUrl  = await uploadMedia(pendingCommentFile);
                 mediaType = pendingCommentFile.type;
@@ -1398,7 +1383,7 @@ saveThreadBtn.addEventListener("click", async () => {
     if (threadPendingFiles.length > 0) {
         for (const file of threadPendingFiles) {
             const isVideo = file.type.startsWith("video/");
-            showSendingIndicator(true, isVideo ? "Compressing video..." : "Uploading...");
+            showSendingIndicator(true);
             try {
                 const url = await uploadMedia(file);
                 // Kalau video, mediaType jadi video/mp4 (hasil compress)
@@ -1496,7 +1481,7 @@ avatarInput.addEventListener("change", async e => {
     const file = e.target.files[0];
     if (!file || !file.type.startsWith("image/")) return;
 
-    showSendingIndicator(true, "Uploading avatar...");
+    showSendingIndicator(true);
     try {
         const url = await uploadMedia(file);
         currentUser.avatar = url;
