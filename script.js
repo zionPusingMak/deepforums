@@ -764,11 +764,19 @@ function renderForums() {
         div.addEventListener("click", () => openForum(forum));
         forumListEl.appendChild(div);
 
-        const unsub = onValue(ref(db, `threads/${forum.id}`), snap => {
+        // Pakai get() + timeout fallback supaya ga stuck di browser yg blokir WebSocket
+        const timeout = setTimeout(() => {
+            if (countSpan.textContent === "loading...") countSpan.textContent = "–";
+        }, 5000);
+
+        get(ref(db, `threads/${forum.id}`)).then(snap => {
+            clearTimeout(timeout);
             const count = snap.exists() ? Object.keys(snap.val()).length : 0;
             countSpan.textContent = `${count} thread${count !== 1 ? "s" : ""}`;
+        }).catch(() => {
+            clearTimeout(timeout);
+            countSpan.textContent = "–";
         });
-        activeListeners.push(() => unsub());
     });
 }
 
