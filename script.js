@@ -183,42 +183,46 @@ function listenGlobalBadge() {
 
 // Listen DM — hanya pesan baru dari orang lain setelah app load
 function listenDMBadge() {
-    // Watch daftar DM rooms dulu, baru pasang listener per room
     const registeredRooms = new Set();
 
-    onValue(ref(db, "dms"), snap => {
-        const data = snap.val() || {};
-        Object.keys(data).forEach(roomKey => {
-            if (registeredRooms.has(roomKey)) return; // sudah dipasang listener
+    // onChildAdded di level /dms — fire tiap ada room baru ATAU room existing saat load
+    // Kita skip existing rooms, hanya attach listener ke room yang relevan
+    onChildAdded(ref(db, "dms"), (roomSnap) => {
+        const roomKey = roomSnap.key;
+        if (registeredRooms.has(roomKey)) return;
 
-            const parts = roomKey.split("__");
-            if (!parts.includes(currentUser.username)) return;
+        const parts = roomKey.split("__");
+        // Cek apakah room ini melibatkan user kita (pakai MY_USER_ID bukan username)
+        // Tapi room key pakai username... jadi kita cek dua cara:
+        // 1. Langsung cek username saat ini
+        // 2. Juga cek via pesan pertama di room (fallback)
+        const involveMe = parts.includes(currentUser.username);
+        if (!involveMe) return;
 
-            registeredRooms.add(roomKey);
-            const other = parts.find(u => u !== currentUser.username);
+        registeredRooms.add(roomKey);
+        const other = parts.find(u => u !== currentUser.username);
 
-            // startAt APP_START_TIME → hanya pesan yang dateng setelah app dibuka
-            const roomRef = query(
-                ref(db, `dms/${roomKey}`),
-                orderByChild("timestamp"),
-                startAt(APP_START_TIME)
-            );
+        // startAt APP_START_TIME → hanya pesan setelah app dibuka
+        const roomRef = query(
+            ref(db, `dms/${roomKey}`),
+            orderByChild("timestamp"),
+            startAt(APP_START_TIME)
+        );
 
-            onChildAdded(roomRef, (child) => {
-                const m = child.val();
-                // Skip pesan sendiri
-                if (m.userId === MY_USER_ID) return;
-                if (!m.userId && m.author === currentUser.username) return;
+        onChildAdded(roomRef, (child) => {
+            const m = child.val();
+            // Skip pesan sendiri — cek userId (reliable) dan author (fallback)
+            if (m.userId === MY_USER_ID) return;
+            if (!m.userId && m.author === currentUser.username) return;
 
-                // Kalau lagi buka DM dengan orang ini, ga perlu badge
-                if (currentDMUser === other &&
-                    document.getElementById("dmConvoView").style.display !== "none") {
-                    return;
-                }
+            // Kalau lagi buka DM dengan orang ini, ga perlu badge
+            if (currentDMUser === other &&
+                document.getElementById("dmConvoView").style.display !== "none") {
+                return;
+            }
 
-                _badgeCount.dm++;
-                showBadge("dm", _badgeCount.dm);
-            });
+            _badgeCount.dm++;
+            showBadge("dm", _badgeCount.dm);
         });
     });
 }
@@ -885,16 +889,13 @@ function renderThreadView(threadId, forumId) {
             postDiv.appendChild(img);
         }
 
-        if (thread.video) {
-            const embedUrl = convertVideoUrl(thread.video);
-            if (embedUrl) {
-                const iframe = document.createElement("iframe");
-                iframe.src = embedUrl;
-                iframe.className = "thread-media video-embed";
-                iframe.frameBorder = "0";
-                iframe.allowFullscreen = true;
-                postDiv.appendChild(iframe);
-            }
+        if (thread.videoUrl) {
+            const vid = document.createElement("video");
+            vid.src = thread.videoUrl;
+            vid.className = "thread-media";
+            vid.controls = true;
+            vid.style.maxWidth = "100%";
+            postDiv.appendChild(vid);
         }
 
         threadContent.appendChild(postDiv);
@@ -1030,14 +1031,30 @@ function renderThreadView(threadId, forumId) {
 // ===== VIDEO URL CONVERTER =====
 function convertVideoUrl(url) {
     try {
+        if (!url) return null;
+        // Tambah https jika tidak ada protocol
+        if (!url.startsWith("http")) url = "https://" + url;
         const u = new URL(url);
         if (u.protocol !== "https:") return null;
-        if (u.hostname.includes("youtube.com") || u.hostname.includes("youtu.be")) {
-            const vid = u.searchParams.get("v") || u.pathname.split("/").pop();
-            if (!/^[\w-]{5,20}$/.test(vid)) return null;
-            return `https://www.youtube.com/embed/${vid}`;
+
+        let vid = null;
+
+        if (u.hostname.includes("youtube.com")) {
+            // Format: youtube.com/watch?v=ID
+            vid = u.searchParams.get("v");
+            // Format: youtube.com/shorts/ID atau youtube.com/embed/ID
+            if (!vid) {
+                const parts = u.pathname.split("/").filter(Boolean);
+                const idx = parts.findIndex(p => p === "shorts" || p === "embed" || p === "v");
+                if (idx !== -1 && parts[idx + 1]) vid = parts[idx + 1];
+            }
+        } else if (u.hostname.includes("youtu.be")) {
+            // Format: youtu.be/ID
+            vid = u.pathname.split("/").filter(Boolean)[0];
         }
-        return null;
+
+        if (!vid || !/^[\w-]{5,20}$/.test(vid)) return null;
+        return `https://www.youtube.com/embed/${vid}`;
     } catch { return null; }
 }
 
@@ -1125,34 +1142,65 @@ newThreadBtn.addEventListener("click", () => {
     document.getElementById("threadBodyInput").value = "";
     document.getElementById("threadImageInput").value = "";
     document.getElementById("threadVideoInput").value = "";
+    document.getElementById("threadMediaPreview").style.display = "none";
+    document.getElementById("threadMediaPreview").innerHTML = "";
     newThreadModal.classList.add("active");
 });
 
 cancelThreadBtn.addEventListener("click", () => newThreadModal.classList.remove("active"));
 
+// Preview handler untuk image input di thread modal
+document.getElementById("threadImageInput").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const preview = document.getElementById("threadMediaPreview");
+    preview.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(file);
+    img.style.cssText = "max-width:100%;max-height:140px;border-radius:6px;border:1px solid #2a2a2a;";
+    // Clear video if image selected
+    document.getElementById("threadVideoInput").value = "";
+    preview.appendChild(img);
+    preview.style.display = "block";
+});
+
+// Preview handler untuk video input di thread modal
+document.getElementById("threadVideoInput").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const preview = document.getElementById("threadMediaPreview");
+    preview.innerHTML = "";
+    const vid = document.createElement("video");
+    vid.src = URL.createObjectURL(file);
+    vid.controls = true;
+    vid.style.cssText = "max-width:100%;max-height:140px;border-radius:6px;border:1px solid #2a2a2a;";
+    // Clear image if video selected
+    document.getElementById("threadImageInput").value = "";
+    preview.appendChild(vid);
+    preview.style.display = "block";
+});
+
 saveThreadBtn.addEventListener("click", async () => {
-    const title    = document.getElementById("threadTitleInput").value.trim();
-    const content  = document.getElementById("threadBodyInput").value.trim();
-    const videoUrl = document.getElementById("threadVideoInput").value.trim();
+    const title   = document.getElementById("threadTitleInput").value.trim();
+    const content = document.getElementById("threadBodyInput").value.trim();
 
     if (!title || !content) { alert("Title and content are required."); return; }
 
-    const safeVideo = videoUrl ? (convertVideoUrl(videoUrl) ? videoUrl : null) : null;
-    if (videoUrl && !safeVideo) { alert("Only YouTube video URLs are supported."); return; }
-
     let imageUrl = null;
+    let videoUrl = null;
+
     const imgFile = document.getElementById("threadImageInput").files[0];
+    const vidFile = document.getElementById("threadVideoInput").files[0];
 
     if (imgFile) {
-        if (!imgFile.type.startsWith("image/")) { alert("Please select an image file."); return; }
         showSendingIndicator(true);
-        try {
-            imageUrl = await uploadMedia(imgFile);
-        } catch(e) {
-            alert("Image upload failed.");
-            showSendingIndicator(false);
-            return;
-        }
+        try { imageUrl = await uploadMedia(imgFile); }
+        catch(e) { alert("Image upload failed: " + e.message); showSendingIndicator(false); return; }
+        showSendingIndicator(false);
+    } else if (vidFile) {
+        showSendingIndicator(true);
+        try { videoUrl = await uploadMedia(vidFile); }
+        catch(e) { alert("Video upload failed: " + e.message); showSendingIndicator(false); return; }
         showSendingIndicator(false);
     }
 
@@ -1160,12 +1208,14 @@ saveThreadBtn.addEventListener("click", async () => {
         forumId: currentForum.id,
         title, content,
         author: currentUser.username,
-        imageUrl,
-        video: safeVideo,
+        imageUrl: imageUrl || null,
+        videoUrl: videoUrl || null,
         timestamp: serverTimestamp(),
         comments: {}
     });
 
+    document.getElementById("threadMediaPreview").style.display = "none";
+    document.getElementById("threadMediaPreview").innerHTML = "";
     newThreadModal.classList.remove("active");
 });
 
