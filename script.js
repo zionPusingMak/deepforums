@@ -46,8 +46,8 @@ async function uploadMedia(file) {
     try {
         return await uploadToYupra(file);
     } catch(e) {
-        console.warn("Yupra failed, trying catbox:", e.message);
-        return await uploadToCatbox(file);
+        console.warn("Yupra failed, trying pomf:", e.message);
+        return await uploadToPomf(file);
     }
 }
 
@@ -75,25 +75,29 @@ async function uploadToYupra(file) {
     return "https://cdn.yupra.my.id" + data.files[0].url;
 }
 
-async function uploadToCatbox(file) {
+async function uploadToPomf(file) {
+    // pomf2.lain.la — public, no auth, CORS *, support semua file termasuk video
     const formData = new FormData();
     const ext = (file.name && file.name.includes("."))
         ? file.name.split(".").pop()
         : (file.type.split("/")[1] || "bin");
     const filename = (file.name && file.name !== "") ? file.name : ("upload." + ext);
-    formData.append("reqtype", "fileupload");
-    formData.append("fileToUpload", file, filename);
+    formData.append("files[]", file, filename);
 
-    const res = await fetch("https://catbox.moe/user/api.php", {
+    const res = await fetch("https://pomf2.lain.la/upload.php", {
         method: "POST",
         body: formData
     });
 
     const text = await res.text();
-    if (!text || !text.startsWith("https://")) {
-        throw new Error("Catbox upload failed: " + text.slice(0, 80));
+    let data;
+    try { data = JSON.parse(text); }
+    catch(e) { throw new Error("Pomf response invalid: " + text.slice(0, 80)); }
+
+    if (!data.success || !data.files || data.files.length === 0) {
+        throw new Error("Pomf upload failed: " + text.slice(0, 80));
     }
-    return text.trim();
+    return "https://pomf2.lain.la" + data.files[0].url;
 }
 
 // ===== USER =====
