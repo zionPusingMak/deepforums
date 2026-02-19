@@ -294,6 +294,7 @@ window.addEventListener("beforeunload", () => {
 const forums = [
     { id: "general", name: "general", desc: "General discussion" },
     { id: "gore",    name: "gore",    desc: "Things that should you never see" },
+    { id: "exploit", name: "exploit", desc: "Nothing is impossible" },
     { id: "random",  name: "random",  desc: "Anything goes here" }
 ];
 
