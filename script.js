@@ -40,18 +40,26 @@ function listenUserIdMap() {
 }
 
 // ===== FFMPEG VIDEO COMPRESSOR =====
-// Menggunakan @ffmpeg/ffmpeg via script tag UMD (di index.html).
-// Cara ini menghindari COEP worker-spawn issue karena ffmpeg.js
-// me-load worker-nya sendiri via inline blob, bukan URL eksternal.
-//
-// Versi yang dipakai:
-//   ffmpeg : @ffmpeg/ffmpeg@0.12.10  (UMD, via window.FFmpegWASM)
-//   util   : @ffmpeg/util@0.12.1     (UMD, via window.FFmpegUtil)
-//   core   : @ffmpeg/core-st@0.12.6  (single-thread, no SharedArrayBuffer needed)
+// Pakai @ffmpeg/ffmpeg UMD + @ffmpeg/core UMD (single-thread, no SharedArrayBuffer).
+// @ffmpeg/util tidak ada UMD build — fetchFile diimplementasi manual via fetch + Uint8Array.
+// toBlobURL juga diimplementasi manual supaya tidak tergantung package eksternal.
 
 let _ffmpegInstance = null;
 let _ffmpegLoaded   = false;
 let _ffmpegLoading  = false;
+
+// Manual toBlobURL — download resource lalu bungkus jadi blob URL
+async function _toBlobURL(url, mimeType) {
+    const res  = await fetch(url);
+    const buf  = await res.arrayBuffer();
+    const blob = new Blob([buf], { type: mimeType });
+    return URL.createObjectURL(blob);
+}
+
+// Manual fetchFile — ambil File/Blob dan convert ke Uint8Array
+async function _fetchFile(file) {
+    return new Uint8Array(await file.arrayBuffer());
+}
 
 async function loadFFmpeg() {
     if (_ffmpegLoaded) return _ffmpegInstance;
@@ -65,22 +73,18 @@ async function loadFFmpeg() {
     showSendingIndicator(true);
 
     try {
-        // Load UMD scripts kalau belum ada (lazy, hanya sekali)
+        // Load ffmpeg UMD — expose window.FFmpegWASM
         await _loadScript("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.min.js");
-        await _loadScript("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/util.min.js");
 
-        const { FFmpeg }                   = window.FFmpegWASM;
-        const { toBlobURL, fetchFile: ff } = window.FFmpegUtil;
+        const { FFmpeg } = window.FFmpegWASM;
+        _ffmpegInstance  = new FFmpeg();
 
-        window.__ffFetchFile = ff;
-        _ffmpegInstance = new FFmpeg();
-
-        // Single-thread core — tidak butuh SharedArrayBuffer, works everywhere
-        // termasuk Vercel dengan COEP header.
-        const stBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.12.6/dist/esm";
+        // Core UMD single-thread (tidak butuh SharedArrayBuffer)
+        // Semua file di-toBlobURL supaya tidak kena blokir COEP
+        const coreBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
         await _ffmpegInstance.load({
-            coreURL: await toBlobURL(`${stBase}/ffmpeg-core.js`,   "text/javascript"),
-            wasmURL: await toBlobURL(`${stBase}/ffmpeg-core.wasm`, "application/wasm"),
+            coreURL: await _toBlobURL(`${coreBase}/ffmpeg-core.js`,   "text/javascript"),
+            wasmURL: await _toBlobURL(`${coreBase}/ffmpeg-core.wasm`, "application/wasm"),
         });
 
         _ffmpegLoaded  = true;
@@ -94,13 +98,12 @@ async function loadFFmpeg() {
     }
 }
 
-// Helper: inject <script> tag dan tunggu sampai load
+// Helper: inject <script> tag dan tunggu load selesai (idempotent)
 function _loadScript(src) {
     return new Promise((resolve, reject) => {
         if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-        const s = document.createElement("script");
-        s.src = src;
-        s.crossOrigin = "anonymous";
+        const s  = document.createElement("script");
+        s.src    = src;
         s.onload  = resolve;
         s.onerror = () => reject(new Error("Gagal load script: " + src));
         document.head.appendChild(s);
@@ -127,13 +130,13 @@ async function compressVideo(file) {
 
     try {
         const ff = await loadFFmpeg();
-        const fetchFile = window.__ffFetchFile;
+        
 
         const ext     = (file.name.split(".").pop() || "mp4").toLowerCase();
         const inName  = `input.${ext}`;
         const outName = "output.mp4";
 
-        await ff.writeFile(inName, await fetchFile(file));
+        await ff.writeFile(inName, await _fetchFile(file));
 
         // --- Pass 1: kualitas bagus, max 720p ---
         await ff.exec([
@@ -165,7 +168,7 @@ async function compressVideo(file) {
             const in2Name  = "input2.mp4";
             const out2Name = "output2.mp4";
 
-            await ff.writeFile(in2Name, await fetchFile(compressed));
+            await ff.writeFile(in2Name, await _fetchFile(compressed));
 
             await ff.exec([
                 "-i", in2Name,
