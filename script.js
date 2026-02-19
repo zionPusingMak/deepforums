@@ -41,7 +41,17 @@ function listenUserIdMap() {
 
 // ===== MEDIA UPLOAD =====
 async function uploadMedia(file) {
-    // CDN yupra: 1 file per request, field name "files"
+    // PRIMARY: cdn.yupra.my.id
+    // FALLBACK: catbox.moe (public, no auth, support semua file type termasuk video)
+    try {
+        return await uploadToYupra(file);
+    } catch(e) {
+        console.warn("Yupra failed, trying catbox:", e.message);
+        return await uploadToCatbox(file);
+    }
+}
+
+async function uploadToYupra(file) {
     const formData = new FormData();
     const ext = (file.name && file.name.includes("."))
         ? file.name.split(".").pop()
@@ -57,12 +67,33 @@ async function uploadMedia(file) {
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); }
-    catch(e) { throw new Error("CDN response bukan JSON: " + text.slice(0, 120)); }
+    catch(e) { throw new Error("Yupra response invalid: " + text.slice(0, 80)); }
 
     if (!data.success || !data.files || data.files.length === 0) {
-        throw new Error("Upload gagal: " + (data.message || text.slice(0, 120)));
+        throw new Error(data.message || "Yupra upload failed");
     }
     return "https://cdn.yupra.my.id" + data.files[0].url;
+}
+
+async function uploadToCatbox(file) {
+    const formData = new FormData();
+    const ext = (file.name && file.name.includes("."))
+        ? file.name.split(".").pop()
+        : (file.type.split("/")[1] || "bin");
+    const filename = (file.name && file.name !== "") ? file.name : ("upload." + ext);
+    formData.append("reqtype", "fileupload");
+    formData.append("fileToUpload", file, filename);
+
+    const res = await fetch("https://catbox.moe/user/api.php", {
+        method: "POST",
+        body: formData
+    });
+
+    const text = await res.text();
+    if (!text || !text.startsWith("https://")) {
+        throw new Error("Catbox upload failed: " + text.slice(0, 80));
+    }
+    return text.trim();
 }
 
 // ===== USER =====
