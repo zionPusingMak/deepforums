@@ -22,19 +22,18 @@ const db  = getDatabase(app);
 // Bypass Vercel serverless (limit 4.5MB) dengan upload direct ke catbox.moe
 async function uploadMedia(file) {
     const formData = new FormData();
-    formData.append("reqtype", "fileupload");
-    formData.append("fileToUpload", file);
+    formData.append("files", file);
 
-    const res = await fetch("https://catbox.moe/user/api.php", {
+    const res = await fetch("https://cdn.yupra.my.id/upload", {
         method: "POST",
         body: formData
     });
 
-    const url = await res.text();
-    if (!url || !url.startsWith("https://")) {
-        throw new Error("Upload ke catbox gagal: " + url);
+    const data = await res.json();
+    if (!data.success || !data.files || data.files.length === 0) {
+        throw new Error("Upload ke CDN gagal");
     }
-    return url.trim();
+    return "https://cdn.yupra.my.id" + data.files[0].url;
 }
 
 // ===== USER (still localStorage for session identity) =====
