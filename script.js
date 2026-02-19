@@ -87,32 +87,28 @@ function clearListeners() {
 }
 
 // ===== NOTIFICATION BADGES =====
-// Tracks last-seen timestamps per channel
-const BADGE_KEY = "deepforums_last_seen";
-let lastSeen = JSON.parse(localStorage.getItem(BADGE_KEY) || "{}");
+// Konsep: HANYA tampilkan badge kalau ada pesan BARU dari orang lain
+// yang dateng setelah kita terakhir buka channel tersebut.
+// "Terakhir buka" disimpan sebagai server timestamp snapshot key —
+// kita catat Firebase key terakhir yang ada saat kita buka/tutup channel.
+// Dengan ini: ganti username pun ga pengaruh (pakai userId, bukan username).
 
-function saveLastSeen() {
-    localStorage.setItem(BADGE_KEY, JSON.stringify(lastSeen));
+// In-memory badge counters (reset tiap reload — sama kayak WA/TG)
+const _badgeCount = { global: 0, dm: 0 };
+
+// Catat Firebase key terakhir per channel saat dibuka
+// Format: { global: "-NxyzLastKey", dm_ali: "-NabcLastKey" }
+const _lastReadKey = JSON.parse(sessionStorage.getItem("lastReadKey") || "{}");
+
+function _saveLastReadKey() {
+    sessionStorage.setItem("lastReadKey", JSON.stringify(_lastReadKey));
 }
 
-function markChannelRead(channel) {
-    // Deprecated: pakai markGlobalRead() atau markDMRead(username) 
-    // Tetap disimpan untuk kompatibilitas
-    lastSeen[channel] = Date.now();
-    saveLastSeen();
-    updateBadge(channel, 0);
-}
-
-function updateBadge(channel, count) {
-    // channel: "global" | "dm_{username}"
-    let btn;
-    if (channel === "global") {
-        btn = document.getElementById("navGlobalChat");
-    } else if (channel.startsWith("dm_")) {
-        btn = document.getElementById("navDMs");
-    }
+function showBadge(target, count) {
+    // target: "global" | "dm"
+    const id = target === "global" ? "navGlobalChat" : "navDMs";
+    const btn = document.getElementById(id);
     if (!btn) return;
-
     let badge = btn.querySelector(".nav-badge");
     if (count > 0) {
         if (!badge) {
@@ -126,88 +122,121 @@ function updateBadge(channel, count) {
     }
 }
 
-// Listen to global chat for unread count
+// Dipanggil saat buka Global Chat → catat key terakhir, reset badge
+function markGlobalRead() {
+    _badgeCount.global = 0;
+    showBadge("global", 0);
+    // Catat key terakhir yang ada sekarang
+    get(query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(1))).then(snap => {
+        snap.forEach(child => { _lastReadKey["global"] = child.key; });
+        _saveLastReadKey();
+    });
+}
+
+// Dipanggil saat buka DM convo → reset badge untuk DM itu
+function markDMRead(otherUsername) {
+    const dmKey = getDMKey(currentUser.username, otherUsername);
+    get(query(ref(db, `dms/${dmKey}`), orderByChild("timestamp"), limitToLast(1))).then(snap => {
+        snap.forEach(child => { _lastReadKey[`dm_${otherUsername}`] = child.key; });
+        _saveLastReadKey();
+    });
+    // Recalculate total DM badge (subtract this convo's unread)
+    _recalcDMBadge();
+}
+
+function _recalcDMBadge() {
+    // Hitung ulang dari in-memory state
+    // Ini dipanggil setelah markDMRead — badge akan berkurang
+    // Actual count dikelola oleh listenDMBadge onChildAdded
+    // Di sini kita cukup hide badge kalau _badgeCount.dm <= 0
+    if (_badgeCount.dm <= 0) {
+        _badgeCount.dm = 0;
+        showBadge("dm", 0);
+    }
+}
+
+// Listen global chat — HANYA hitung pesan yang dateng SETELAH lastReadKey
 function listenGlobalBadge() {
-    const chatRef = query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(100));
-    onValue(chatRef, snap => {
-        // sinceTime: pakai key Firebase (string id) bukan timestamp,
-        // supaya ga kena masalah server vs local clock.
-        // Kita simpan last-seen sebagai array of Firebase keys yang sudah dibaca.
-        const seenKeys = JSON.parse(localStorage.getItem("seen_global") || "[]");
-        let count = 0;
-        snap.forEach(child => {
+    // Ambil dulu key terakhir yang ada saat ini (baseline), baru pasang listener
+    get(query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(1))).then(snap => {
+        // Kalau belum pernah buka global chat, set baseline = key terakhir sekarang
+        if (!_lastReadKey["global"]) {
+            snap.forEach(child => { _lastReadKey["global"] = child.key; });
+            _saveLastReadKey();
+        }
+
+        // Sekarang listen untuk pesan BARU saja (onChildAdded akan fire existing dulu,
+        // lalu fire lagi tiap ada yang baru)
+        const chatRef = query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(200));
+        let initialLoadDone = false;
+        let initialKeys = new Set();
+
+        onChildAdded(chatRef, (child) => {
+            if (!initialLoadDone) {
+                // Semua yang dateng sebelum initialLoadDone = existing data, skip
+                initialKeys.add(child.key);
+                return;
+            }
+            // Pesan baru yang beneran baru dateng
             const m = child.val();
-            // Skip pesan sendiri
-            if (m.userId === MY_USER_ID) return;
-            // Skip yang sudah dibaca
-            if (seenKeys.includes(child.key)) return;
-            count++;
+            if (m.userId === MY_USER_ID) return; // pesan sendiri, skip
+            if (child.key === _lastReadKey["global"]) return; // sudah dibaca
+
+            // Kalau global chat sedang dibuka, jangan tambah badge
+            if (document.getElementById("globalChatView").style.display !== "none") {
+                markGlobalRead();
+                return;
+            }
+
+            _badgeCount.global++;
+            showBadge("global", _badgeCount.global);
         });
 
-        if (document.getElementById("globalChatView").style.display === "none") {
-            updateBadge("global", count);
-        }
+        // Tandai initial load selesai setelah microtask queue kosong
+        setTimeout(() => { initialLoadDone = true; }, 0);
     });
 }
 
-function markGlobalRead() {
-    // Simpan semua key yang ada sekarang sebagai "sudah dibaca"
-    const chatRef = query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(100));
-    get(chatRef).then(snap => {
-        const keys = [];
-        snap.forEach(child => keys.push(child.key));
-        // Simpan hanya 200 key terakhir supaya localStorage ga membengkak
-        const trimmed = keys.slice(-200);
-        localStorage.setItem("seen_global", JSON.stringify(trimmed));
-        updateBadge("global", 0);
-    });
-}
-
-// Listen to DMs for unread count
+// Listen DM — hanya hitung pesan baru dari orang lain
 function listenDMBadge() {
     const dmsRef = ref(db, "dms");
-    onValue(dmsRef, snap => {
-        const data = snap.val() || {};
-        let totalUnread = 0;
+    // Track initialLoad per DM room
+    const initialDone = {};
 
-        Object.entries(data).forEach(([key, msgs]) => {
-            // Exact match: key harus mengandung username kita sebagai salah satu bagian
-            const parts = key.split("__");
+    onValue(dmsRef, snap => {
+        // Kalau ada room DM baru yang melibatkan kita, pasang listener
+        const data = snap.val() || {};
+        Object.keys(data).forEach(roomKey => {
+            if (initialDone[roomKey] !== undefined) return; // sudah dipasang
+            const parts = roomKey.split("__");
             if (!parts.includes(currentUser.username)) return;
 
             const other = parts.find(u => u !== currentUser.username);
-            const seenKeys = JSON.parse(localStorage.getItem(`seen_dm_${other}`) || "[]");
+            initialDone[roomKey] = false;
 
-            const unread = Object.entries(msgs || {}).filter(([msgKey, m]) => {
-                // Skip pesan dari kita sendiri — cek userId DAN author sebagai fallback
-                if (m.userId === MY_USER_ID) return false;
-                if (!m.userId && m.author === currentUser.username) return false;
-                // Skip yang sudah dibaca
-                if (seenKeys.includes(msgKey)) return false;
-                return true;
-            }).length;
+            const roomRef = query(ref(db, `dms/${roomKey}`), orderByChild("timestamp"), limitToLast(200));
 
-            totalUnread += unread;
+            onChildAdded(roomRef, (child) => {
+                if (!initialDone[roomKey]) return; // skip existing messages
+
+                const m = child.val();
+                // Skip pesan sendiri
+                if (m.userId === MY_USER_ID) return;
+                if (!m.userId && m.author === currentUser.username) return;
+
+                // Kalau DM dengan orang ini sedang dibuka, jangan badge
+                if (currentDMUser === other &&
+                    document.getElementById("dmConvoView").style.display !== "none") {
+                    markDMRead(other);
+                    return;
+                }
+
+                _badgeCount.dm++;
+                showBadge("dm", _badgeCount.dm);
+            });
+
+            setTimeout(() => { initialDone[roomKey] = true; }, 0);
         });
-
-        const isDmOpen = document.getElementById("dmConvoView").style.display !== "none" ||
-                         document.getElementById("dmView").style.display !== "none";
-        if (!isDmOpen) {
-            updateBadge("dm_", totalUnread);
-        }
-    });
-}
-
-function markDMRead(otherUsername) {
-    const key = getDMKey(currentUser.username, otherUsername);
-    get(ref(db, `dms/${key}`)).then(snap => {
-        const keys = [];
-        snap.forEach(child => keys.push(child.key));
-        const trimmed = keys.slice(-200);
-        localStorage.setItem(`seen_dm_${otherUsername}`, JSON.stringify(trimmed));
-        updateBadge(`dm_${otherUsername}`, 0);
-        // Refresh total DM badge
-        listenDMBadge();
     });
 }
 
@@ -364,10 +393,7 @@ function openGlobalChat() {
         container.appendChild(el);
         attachUserClicks(el);
         container.scrollTop = container.scrollHeight;
-        // Keep marking read while chat is open
-        if (document.getElementById("globalChatView").style.display !== "none") {
-            markGlobalRead();
-        }
+        // Badge is handled by listenGlobalBadge
     });
 
     activeListeners.push(() => unsub());
@@ -452,14 +478,8 @@ function openDMList() {
                 const other = key.split("__").find(u => u !== currentUser.username);
                 const msgArr = Object.values(msgs || {});
                 const last = msgArr.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)).pop();
-                // Count unread — pakai Firebase key based (sama dengan listenDMBadge)
-                const seenKeys = JSON.parse(localStorage.getItem(`seen_dm_${other}`) || "[]");
-                const unread = Object.entries(msgs || {}).filter(([msgKey, m]) => {
-                    if (m.userId === MY_USER_ID) return false;
-                    if (!m.userId && m.author === currentUser.username) return false;
-                    if (seenKeys.includes(msgKey)) return false;
-                    return true;
-                }).length;
+                // Unread count: shown in badge on nav, not per-item here
+                const unread = 0;
                 return { other, last, key, unread };
             })
             .sort((a, b) => (b.last?.timestamp || 0) - (a.last?.timestamp || 0));
@@ -528,10 +548,7 @@ function openDMConvo(username) {
         const el = buildChatMsgEl(m, false);
         container.appendChild(el);
         container.scrollTop = container.scrollHeight;
-        // Keep marking read while convo is open
-        if (currentDMUser === username) {
-            markDMRead(username);
-        }
+        // Badge cleared by listenDMBadge when convo is open
     });
 
     activeListeners.push(() => unsub());
