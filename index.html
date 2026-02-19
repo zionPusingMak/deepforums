@@ -54,8 +54,6 @@
 <!-- THREAD VIEW -->
 <div id="threadView" style="display:none;">
     <div class="thread-unified-block">
-        <!-- BUG FIX #2: renamed from "threadContent" to "threadPostContent"
-             to avoid collision with the modal textarea -->
         <div id="threadPostContent"></div>
         <div id="commentSection">
             <h3 class="comment-title">Comments</h3>
@@ -63,6 +61,16 @@
         </div>
     </div>
     <div id="commentBar">
+        <!-- Media attach button for comments -->
+        <label class="chat-attach-btn" for="commentFile" title="Attach image">
+            <i class="fa-solid fa-paperclip"></i>
+        </label>
+        <input type="file" id="commentFile" accept="image/*" style="display:none;">
+        <!-- Preview area shown when image is selected -->
+        <div id="commentMediaPreview" class="comment-media-preview" style="display:none;">
+            <img id="commentMediaPreviewImg" src="" alt="preview">
+            <button id="commentMediaClear" title="Remove">✕</button>
+        </div>
         <textarea id="commentInput" placeholder="Write a comment..." rows="1"></textarea>
         <button id="submitComment">Post</button>
     </div>
@@ -126,8 +134,6 @@
 </div>
 
 <!-- NEW THREAD MODAL -->
-<!-- BUG FIX #2: all input IDs now have unique names ending in "Input"
-     so they never collide with display elements -->
 <div id="newThreadModal" class="modal">
     <div class="modal-box">
         <h2>New Thread</h2>
