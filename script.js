@@ -42,16 +42,20 @@ function listenUserIdMap() {
 // ===== MEDIA UPLOAD =====
 async function uploadMedia(file) {
     const formData = new FormData();
-    formData.append("files", file);
+    // Pastikan filename ada dan ekstensinya benar
+    const ext = file.name.split(".").pop() || (file.type.split("/")[1]) || "bin";
+    const filename = file.name || `upload.${ext}`;
+    formData.append("files", file, filename);
 
     const res = await fetch("https://cdn.yupra.my.id/upload", {
         method: "POST",
         body: formData
     });
 
+    if (!res.ok) throw new Error(`CDN error: ${res.status}`);
     const data = await res.json();
     if (!data.success || !data.files || data.files.length === 0) {
-        throw new Error("Upload ke CDN gagal");
+        throw new Error("Upload ke CDN gagal: " + JSON.stringify(data));
     }
     return "https://cdn.yupra.my.id" + data.files[0].url;
 }
@@ -881,21 +885,43 @@ function renderThreadView(threadId, forumId) {
         postDiv.appendChild(titleEl);
         postDiv.appendChild(bodyEl);
 
-        if (thread.imageUrl) {
-            const img = document.createElement("img");
-            img.src = thread.imageUrl;
-            img.className = "thread-media";
-            img.alt = "Thread image";
-            postDiv.appendChild(img);
+        // New multi-media format
+        if (thread.mediaItems && thread.mediaItems.length > 0) {
+            const grid = document.createElement("div");
+            grid.className = "thread-media-grid";
+            thread.mediaItems.forEach(item => {
+                if (item.type && item.type.startsWith("video/")) {
+                    const vid = document.createElement("video");
+                    vid.src = item.url;
+                    vid.controls = true;
+                    vid.className = "thread-media-item";
+                    grid.appendChild(vid);
+                } else {
+                    const img = document.createElement("img");
+                    img.src = item.url;
+                    img.className = "thread-media-item";
+                    img.alt = "";
+                    grid.appendChild(img);
+                }
+            });
+            postDiv.appendChild(grid);
         }
-
-        if (thread.videoUrl) {
-            const vid = document.createElement("video");
-            vid.src = thread.videoUrl;
-            vid.className = "thread-media";
-            vid.controls = true;
-            vid.style.maxWidth = "100%";
-            postDiv.appendChild(vid);
+        // Legacy single image/video support
+        if (!thread.mediaItems) {
+            if (thread.imageUrl) {
+                const img = document.createElement("img");
+                img.src = thread.imageUrl;
+                img.className = "thread-media";
+                img.alt = "Thread image";
+                postDiv.appendChild(img);
+            }
+            if (thread.videoUrl) {
+                const vid = document.createElement("video");
+                vid.src = thread.videoUrl;
+                vid.className = "thread-media";
+                vid.controls = true;
+                postDiv.appendChild(vid);
+            }
         }
 
         threadContent.appendChild(postDiv);
@@ -1140,44 +1166,64 @@ const saveThreadBtn   = document.getElementById("saveThreadBtn");
 newThreadBtn.addEventListener("click", () => {
     document.getElementById("threadTitleInput").value = "";
     document.getElementById("threadBodyInput").value = "";
-    document.getElementById("threadImageInput").value = "";
-    document.getElementById("threadVideoInput").value = "";
-    document.getElementById("threadMediaPreview").style.display = "none";
-    document.getElementById("threadMediaPreview").innerHTML = "";
+    document.getElementById("threadMediaInput").value = "";
+    threadPendingFiles = [];
+    renderThreadMediaPreview();
     newThreadModal.classList.add("active");
 });
 
 cancelThreadBtn.addEventListener("click", () => newThreadModal.classList.remove("active"));
 
-// Preview handler untuk image input di thread modal
-document.getElementById("threadImageInput").addEventListener("change", e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const preview = document.getElementById("threadMediaPreview");
-    preview.innerHTML = "";
-    const img = document.createElement("img");
-    img.src = URL.createObjectURL(file);
-    img.style.cssText = "max-width:100%;max-height:140px;border-radius:6px;border:1px solid #2a2a2a;";
-    // Clear video if image selected
-    document.getElementById("threadVideoInput").value = "";
-    preview.appendChild(img);
-    preview.style.display = "block";
-});
+// ===== THREAD MODAL MULTI-MEDIA (max 3) =====
+let threadPendingFiles = []; // array of File objects, max 3
 
-// Preview handler untuk video input di thread modal
-document.getElementById("threadVideoInput").addEventListener("change", e => {
-    const file = e.target.files[0];
-    if (!file) return;
+function renderThreadMediaPreview() {
     const preview = document.getElementById("threadMediaPreview");
+    const countEl = document.getElementById("threadMediaCount");
     preview.innerHTML = "";
-    const vid = document.createElement("video");
-    vid.src = URL.createObjectURL(file);
-    vid.controls = true;
-    vid.style.cssText = "max-width:100%;max-height:140px;border-radius:6px;border:1px solid #2a2a2a;";
-    // Clear image if video selected
-    document.getElementById("threadImageInput").value = "";
-    preview.appendChild(vid);
-    preview.style.display = "block";
+    countEl.textContent = `${threadPendingFiles.length} / 3`;
+
+    if (threadPendingFiles.length === 0) return;
+
+    threadPendingFiles.forEach((file, idx) => {
+        const item = document.createElement("div");
+        item.className = "thread-preview-item";
+
+        if (file.type.startsWith("video/")) {
+            const vid = document.createElement("video");
+            vid.src = URL.createObjectURL(file);
+            vid.controls = true;
+            item.appendChild(vid);
+        } else {
+            const img = document.createElement("img");
+            img.src = URL.createObjectURL(file);
+            item.appendChild(img);
+        }
+
+        // Remove button
+        const rm = document.createElement("button");
+        rm.className = "thread-preview-remove";
+        rm.textContent = "✕";
+        rm.onclick = () => {
+            threadPendingFiles.splice(idx, 1);
+            renderThreadMediaPreview();
+        };
+        item.appendChild(rm);
+        preview.appendChild(item);
+    });
+}
+
+document.getElementById("threadMediaInput").addEventListener("change", e => {
+    const files = Array.from(e.target.files);
+    const remaining = 3 - threadPendingFiles.length;
+    if (remaining <= 0) { alert("Maksimal 3 media."); e.target.value = ""; return; }
+
+    const toAdd = files.slice(0, remaining);
+    if (files.length > remaining) alert(`Hanya ${remaining} file lagi yang bisa ditambah. Sisanya diabaikan.`);
+
+    threadPendingFiles = [...threadPendingFiles, ...toAdd];
+    e.target.value = ""; // reset so same file can be re-added if needed
+    renderThreadMediaPreview();
 });
 
 saveThreadBtn.addEventListener("click", async () => {
@@ -1186,21 +1232,20 @@ saveThreadBtn.addEventListener("click", async () => {
 
     if (!title || !content) { alert("Title and content are required."); return; }
 
-    let imageUrl = null;
-    let videoUrl = null;
-
-    const imgFile = document.getElementById("threadImageInput").files[0];
-    const vidFile = document.getElementById("threadVideoInput").files[0];
-
-    if (imgFile) {
+    // Upload all pending files
+    const mediaItems = [];
+    if (threadPendingFiles.length > 0) {
         showSendingIndicator(true);
-        try { imageUrl = await uploadMedia(imgFile); }
-        catch(e) { alert("Image upload failed: " + e.message); showSendingIndicator(false); return; }
-        showSendingIndicator(false);
-    } else if (vidFile) {
-        showSendingIndicator(true);
-        try { videoUrl = await uploadMedia(vidFile); }
-        catch(e) { alert("Video upload failed: " + e.message); showSendingIndicator(false); return; }
+        for (const file of threadPendingFiles) {
+            try {
+                const url = await uploadMedia(file);
+                mediaItems.push({ url, type: file.type });
+            } catch(e) {
+                alert("Upload gagal: " + e.message);
+                showSendingIndicator(false);
+                return;
+            }
+        }
         showSendingIndicator(false);
     }
 
@@ -1208,14 +1253,16 @@ saveThreadBtn.addEventListener("click", async () => {
         forumId: currentForum.id,
         title, content,
         author: currentUser.username,
-        imageUrl: imageUrl || null,
-        videoUrl: videoUrl || null,
+        mediaItems: mediaItems.length > 0 ? mediaItems : null,
+        // Legacy fields kept for backward compat
+        imageUrl: null,
+        videoUrl: null,
         timestamp: serverTimestamp(),
         comments: {}
     });
 
-    document.getElementById("threadMediaPreview").style.display = "none";
-    document.getElementById("threadMediaPreview").innerHTML = "";
+    threadPendingFiles = [];
+    renderThreadMediaPreview();
     newThreadModal.classList.remove("active");
 });
 
