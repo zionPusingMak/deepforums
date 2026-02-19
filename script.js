@@ -19,8 +19,6 @@ const db  = getDatabase(app);
 // All user data rendered via textContent or DOM API — never raw innerHTML with user input.
 
 // ===== REALTIME USERNAME CACHE =====
-// Maps userId → latest username, listened from Firebase `userIds/` node.
-// When a user renames, all visible author spans update instantly in the DOM.
 const userIdToUsername = {};
 
 function listenUserIdMap() {
@@ -29,7 +27,6 @@ function listenUserIdMap() {
         Object.entries(data).forEach(([uid, uname]) => {
             userIdToUsername[uid] = uname;
         });
-        // Update all currently-rendered author spans in the DOM
         document.querySelectorAll("[data-userid]").forEach(el => {
             const uid = el.dataset.userid;
             if (uid && userIdToUsername[uid]) {
@@ -42,8 +39,7 @@ function listenUserIdMap() {
     });
 }
 
-// ===== MEDIA UPLOAD — langsung dari browser ke catbox.moe =====
-// Bypass Vercel serverless (limit 4.5MB) dengan upload direct ke catbox.moe
+// ===== MEDIA UPLOAD =====
 async function uploadMedia(file) {
     const formData = new FormData();
     formData.append("files", file);
@@ -60,9 +56,7 @@ async function uploadMedia(file) {
     return "https://cdn.yupra.my.id" + data.files[0].url;
 }
 
-// ===== USER (still localStorage for session identity) =====
-// BUG FIX #1: Generate a stable userId so that even after username changes,
-// "my messages" are still identified correctly via userId, not username string.
+// ===== USER =====
 function getOrCreateUserId() {
     let uid = localStorage.getItem("userId");
     if (!uid) {
@@ -92,11 +86,98 @@ function clearListeners() {
     activeListeners = [];
 }
 
+// ===== NOTIFICATION BADGES =====
+// Tracks last-seen timestamps per channel
+const BADGE_KEY = "deepforums_last_seen";
+let lastSeen = JSON.parse(localStorage.getItem(BADGE_KEY) || "{}");
+
+function saveLastSeen() {
+    localStorage.setItem(BADGE_KEY, JSON.stringify(lastSeen));
+}
+
+function markChannelRead(channel) {
+    lastSeen[channel] = Date.now();
+    saveLastSeen();
+    updateBadge(channel, 0);
+}
+
+function updateBadge(channel, count) {
+    // channel: "global" | "dm_{username}"
+    let btn;
+    if (channel === "global") {
+        btn = document.getElementById("navGlobalChat");
+    } else if (channel.startsWith("dm_")) {
+        btn = document.getElementById("navDMs");
+    }
+    if (!btn) return;
+
+    let badge = btn.querySelector(".nav-badge");
+    if (count > 0) {
+        if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "nav-badge";
+            btn.appendChild(badge);
+        }
+        badge.textContent = count > 99 ? "99+" : count;
+    } else {
+        if (badge) badge.remove();
+    }
+}
+
+// Listen to global chat for unread count
+let globalUnreadCount = 0;
+function listenGlobalBadge() {
+    const chatRef = query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(50));
+    onValue(chatRef, snap => {
+        const sinceTime = lastSeen["global"] || 0;
+        let count = 0;
+        snap.forEach(child => {
+            const m = child.val();
+            if (m.userId !== MY_USER_ID && (m.timestamp || 0) > sinceTime) {
+                count++;
+            }
+        });
+        globalUnreadCount = count;
+        // Only show badge if not currently in global chat
+        if (document.getElementById("globalChatView").style.display === "none") {
+            updateBadge("global", count);
+        }
+    });
+}
+
+// Listen to DMs for unread count
+function listenDMBadge() {
+    const dmsRef = ref(db, "dms");
+    onValue(dmsRef, snap => {
+        const data = snap.val() || {};
+        let totalUnread = 0;
+
+        Object.entries(data).forEach(([key, msgs]) => {
+            if (!key.includes(currentUser.username)) return;
+            const other = key.split("__").find(u => u !== currentUser.username);
+            const sinceTime = lastSeen[`dm_${other}`] || 0;
+
+            const msgArr = Object.values(msgs || {});
+            const unread = msgArr.filter(m => m.userId !== MY_USER_ID && (m.timestamp || 0) > sinceTime).length;
+            totalUnread += unread;
+        });
+
+        const isDmOpen = document.getElementById("dmConvoView").style.display !== "none" ||
+                         document.getElementById("dmView").style.display !== "none";
+        if (!isDmOpen) {
+            updateBadge("dm_", totalUnread);
+        }
+    });
+}
+
 // ===== ONLINE PRESENCE =====
-const presenceRef = ref(db, `presence/${currentUser.username}`);
+// FIX: Use dynamic function so rename updates presence correctly
+function getPresenceRef() {
+    return ref(db, `presence/${currentUser.username}`);
+}
 
 async function heartbeat() {
-    await set(presenceRef, { online: true, last: serverTimestamp() });
+    await set(getPresenceRef(), { online: true, last: serverTimestamp() });
 }
 
 function listenOnlineUsers() {
@@ -135,16 +216,15 @@ function listenOnlineUsers() {
 
 heartbeat();
 setInterval(heartbeat, 30000);
-// Mark offline on tab close
 window.addEventListener("beforeunload", () => {
-    set(presenceRef, { online: false, last: serverTimestamp() });
+    set(getPresenceRef(), { online: false, last: serverTimestamp() });
 });
 
 // ===== FORUMS =====
 const forums = [
-    { id: "general", name: "general", desc: "General discussion" },
-    { id: "tech",    name: "tech",    desc: "Technology & coding" },
-    { id: "random",  name: "random",  desc: "Anything goes here" }
+    { id: "exploit", name: "exploit", desc: "Exploit discussion" },
+    { id: "gore",    name: "gore",    desc: "gore" },
+    { id: "general",  name: "random",  desc: "Anything goes here" }
 ];
 
 // ===== ELEMENTS =====
@@ -167,7 +247,6 @@ function hideAllViews() {
 }
 
 // ===== SHARED CHAT MESSAGE ELEMENT BUILDER =====
-// BUG FIX #1: use userId field (not username) to detect "my" messages
 function buildChatMsgEl(m, showClickableAuthor) {
     const isMe = m.userId === MY_USER_ID;
     const dateStr = m.timestamp
@@ -182,7 +261,6 @@ function buildChatMsgEl(m, showClickableAuthor) {
 
     const authorSpan = document.createElement("span");
     authorSpan.className = "chat-author" + (showClickableAuthor ? " clickable-user" : "");
-    // Use cached username if available, fallback to stored author
     const displayName = (m.userId && userIdToUsername[m.userId]) ? userIdToUsername[m.userId] : m.author;
     authorSpan.textContent = displayName;
     if (m.userId) authorSpan.dataset.userid = m.userId;
@@ -231,6 +309,9 @@ function openGlobalChat() {
     newThreadBtn.style.display = "none";
     closeSidebarFn();
 
+    // Mark as read
+    markChannelRead("global");
+
     const container = document.getElementById("globalChatMessages");
     container.innerHTML = "";
 
@@ -242,24 +323,15 @@ function openGlobalChat() {
         container.appendChild(el);
         attachUserClicks(el);
         container.scrollTop = container.scrollHeight;
+        // Keep marking read while chat is open
+        if (document.getElementById("globalChatView").style.display !== "none") {
+            markChannelRead("global");
+        }
     });
 
     activeListeners.push(() => unsub());
 }
 
-// BUG FIX #3: sendGlobalMessage now handles both image AND video upload.
-// The /api/upload endpoint only accepts images, so for video we store the
-// raw file as a blob URL is not persistent — instead we skip server upload
-// for video and store a data URL (small videos) or warn the user.
-// Better approach: allow video via catbox fallback too — the API already
-// only validates image MIME on the server. We pass video through but the
-// server will reject it. So for video in chat we use a different strategy:
-// upload to catbox directly from the browser via a proxy-less approach.
-// SIMPLEST FIX: remove video accept from chat inputs (the API rejects it anyway),
-// OR update the API. Since we can update the API, we'll handle it there.
-// For now: just send the file regardless and let the API handle it.
-// The real fix for "can't insert media" is below — the file input change
-// handler was not properly calling sendGlobalMessage with the file.
 async function sendGlobalMessage(text, file) {
     let mediaUrl = null;
     let mediaType = null;
@@ -277,10 +349,10 @@ async function sendGlobalMessage(text, file) {
         showSendingIndicator(false);
     }
 
-    if (!text && !mediaUrl) return; // nothing to send
+    if (!text && !mediaUrl) return;
 
     await push(ref(db, "global_chat"), {
-        userId: MY_USER_ID, // BUG FIX #1: store stable userId
+        userId: MY_USER_ID,
         author: currentUser.username,
         text: text || "",
         mediaUrl,
@@ -297,12 +369,11 @@ document.getElementById("globalChatSend").addEventListener("click", async () => 
     await sendGlobalMessage(text, null);
 });
 
-// BUG FIX #3: was not awaiting properly; also ensure file is cleared AFTER upload
 document.getElementById("globalChatFile").addEventListener("change", async e => {
     const file = e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) return;
-    const captured = file; // capture before clearing
+    const captured = file;
     e.target.value = "";
     await sendGlobalMessage("", captured);
 });
@@ -329,7 +400,6 @@ function openDMList() {
     const list = document.getElementById("dmList");
     list.innerHTML = "";
 
-    // Listen to all DM rooms involving this user
     const dmsRef = ref(db, "dms");
     const unsub = onValue(dmsRef, snap => {
         const data = snap.val() || {};
@@ -341,7 +411,10 @@ function openDMList() {
                 const other = key.split("__").find(u => u !== currentUser.username);
                 const msgArr = Object.values(msgs || {});
                 const last = msgArr.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)).pop();
-                return { other, last, key };
+                // Count unread
+                const sinceTime = lastSeen[`dm_${other}`] || 0;
+                const unread = msgArr.filter(m => m.userId !== MY_USER_ID && (m.timestamp || 0) > sinceTime).length;
+                return { other, last, key, unread };
             })
             .sort((a, b) => (b.last?.timestamp || 0) - (a.last?.timestamp || 0));
 
@@ -359,7 +432,17 @@ function openDMList() {
 
             const nameDiv = document.createElement("div");
             nameDiv.className = "dm-item-name";
-            nameDiv.textContent = c.other;
+
+            const nameText = document.createTextNode(c.other);
+            nameDiv.appendChild(nameText);
+
+            // Unread badge on DM item
+            if (c.unread > 0) {
+                const badge = document.createElement("span");
+                badge.className = "dm-item-badge";
+                badge.textContent = c.unread > 99 ? "99+" : c.unread;
+                nameDiv.appendChild(badge);
+            }
 
             const previewDiv = document.createElement("div");
             previewDiv.className = "dm-item-preview";
@@ -385,6 +468,9 @@ function openDMConvo(username) {
     mainTitle.textContent = `✉ ${username}`;
     newThreadBtn.style.display = "none";
 
+    // Mark this DM as read
+    markChannelRead(`dm_${username}`);
+
     const container = document.getElementById("dmMessages");
     container.innerHTML = "";
 
@@ -396,12 +482,15 @@ function openDMConvo(username) {
         const el = buildChatMsgEl(m, false);
         container.appendChild(el);
         container.scrollTop = container.scrollHeight;
+        // Keep marking read while convo is open
+        if (currentDMUser === username) {
+            markChannelRead(`dm_${username}`);
+        }
     });
 
     activeListeners.push(() => unsub());
 }
 
-// BUG FIX #3: Same fix as sendGlobalMessage — store userId, handle file properly
 async function sendDMMessage(text, file) {
     if (!currentDMUser) return;
     let mediaUrl = null;
@@ -420,11 +509,11 @@ async function sendDMMessage(text, file) {
         showSendingIndicator(false);
     }
 
-    if (!text && !mediaUrl) return; // nothing to send
+    if (!text && !mediaUrl) return;
 
     const key = getDMKey(currentUser.username, currentDMUser);
     await push(ref(db, `dms/${key}`), {
-        userId: MY_USER_ID, // BUG FIX #1: store stable userId
+        userId: MY_USER_ID,
         author: currentUser.username,
         text: text || "",
         mediaUrl,
@@ -441,7 +530,6 @@ document.getElementById("dmSend").addEventListener("click", async () => {
     await sendDMMessage(text, null);
 });
 
-// BUG FIX #3: capture file before clearing input
 document.getElementById("dmFile").addEventListener("change", async e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -466,7 +554,6 @@ async function openUserProfile(username) {
     newThreadBtn.style.display = "none";
     closeSidebarFn();
 
-    // Load profile from Firebase
     const profileSnap = await get(ref(db, `profiles/${username}`));
     const profile = profileSnap.val() || { username, bio: "No bio yet.", avatar: null };
     const isMe = username === currentUser.username;
@@ -496,7 +583,6 @@ async function openUserProfile(username) {
         msgBtn.onclick = () => openDMConvo(username);
     }
 
-    // Load threads by this user from Firebase
     const profileThreadList = document.getElementById("profileThreadList");
     profileThreadList.innerHTML = "";
 
@@ -572,7 +658,6 @@ function renderForums() {
     forumListEl.style.display = "grid";
     forumListEl.innerHTML = "";
 
-    // Show forum cards with realtime thread counts
     forums.forEach((forum, index) => {
         const div = document.createElement("div");
         div.className = "forum-card";
@@ -594,7 +679,6 @@ function renderForums() {
         div.addEventListener("click", () => openForum(forum));
         forumListEl.appendChild(div);
 
-        // Live thread count
         const unsub = onValue(ref(db, `threads/${forum.id}`), snap => {
             const count = snap.exists() ? Object.keys(snap.val()).length : 0;
             countSpan.textContent = `${count} thread${count !== 1 ? "s" : ""}`;
@@ -617,7 +701,7 @@ function openForum(forum) {
     renderThreads(forum.id);
 }
 
-// ===== RENDER THREADS (realtime) =====
+// ===== RENDER THREADS =====
 function renderThreads(forumId) {
     forumListEl.innerHTML = "";
 
@@ -634,7 +718,6 @@ function renderThreads(forumId) {
             return;
         }
 
-        // Reverse so newest first
         const threadArr = [];
         snap.forEach(child => {
             threadArr.unshift({ id: child.key, ...child.val() });
@@ -701,10 +784,8 @@ function openThread(threadId, forumId) {
     renderThreadView(threadId, fid);
 }
 
-// ===== RENDER THREAD VIEW (realtime) =====
+// ===== RENDER THREAD VIEW =====
 function renderThreadView(threadId, forumId) {
-    // BUG FIX #2: renamed threadContent div in HTML to "threadPostContent"
-    // so it no longer collides with the modal textarea id="threadBodyInput"
     const threadContent = document.getElementById("threadPostContent");
     threadContent.innerHTML = "";
 
@@ -772,7 +853,6 @@ function renderThreadView(threadId, forumId) {
         threadContent.appendChild(postDiv);
         attachUserClicks(threadContent);
 
-        // Render comments
         const commentList = document.getElementById("commentList");
         commentList.innerHTML = "";
 
@@ -807,11 +887,22 @@ function renderThreadView(threadId, forumId) {
                 metaDiv.appendChild(aSpan);
                 metaDiv.appendChild(dSpan);
 
-                const textP = document.createElement("p");
-                textP.textContent = c.text;
-
                 div.appendChild(metaDiv);
-                div.appendChild(textP);
+
+                if (c.text) {
+                    const textP = document.createElement("p");
+                    textP.textContent = c.text;
+                    div.appendChild(textP);
+                }
+
+                if (c.mediaUrl) {
+                    const img = document.createElement("img");
+                    img.src = c.mediaUrl;
+                    img.className = "comment-media";
+                    img.alt = "image";
+                    div.appendChild(img);
+                }
+
                 attachUserClicks(div);
                 commentList.appendChild(div);
             });
@@ -820,19 +911,70 @@ function renderThreadView(threadId, forumId) {
 
     activeListeners.push(() => unsub());
 
-    // Comment submit
+    // Re-wire submit button (clone to remove old listeners)
     const submitBtn = document.getElementById("submitComment");
     const newSubmit = submitBtn.cloneNode(true);
     submitBtn.parentNode.replaceChild(newSubmit, submitBtn);
 
+    // Re-wire file input (clone to remove old listeners)
+    const fileInput = document.getElementById("commentFile");
+    const newFileInput = fileInput.cloneNode(true);
+    fileInput.parentNode.replaceChild(newFileInput, fileInput);
+    // Re-attach label's for target still works since id stays the same
+
+    // Pending media for current comment
+    let pendingCommentFile = null;
+
+    newFileInput.addEventListener("change", e => {
+        const file = e.target.files[0];
+        if (!file || !file.type.startsWith("image/")) return;
+        pendingCommentFile = file;
+
+        // Show preview
+        const preview = document.getElementById("commentMediaPreview");
+        const previewImg = document.getElementById("commentMediaPreviewImg");
+        previewImg.src = URL.createObjectURL(file);
+        preview.style.display = "flex";
+        e.target.value = "";
+    });
+
+    document.getElementById("commentMediaClear").onclick = () => {
+        pendingCommentFile = null;
+        document.getElementById("commentMediaPreview").style.display = "none";
+        document.getElementById("commentMediaPreviewImg").src = "";
+    };
+
     newSubmit.addEventListener("click", async () => {
         const text = document.getElementById("commentInput").value.trim();
-        if (!text) return;
+        if (!text && !pendingCommentFile) return;
+
+        let mediaUrl = null;
+        let mediaType = null;
+
+        if (pendingCommentFile) {
+            showSendingIndicator(true);
+            try {
+                mediaUrl = await uploadMedia(pendingCommentFile);
+                mediaType = pendingCommentFile.type;
+            } catch(e) {
+                alert("Upload gagal: " + e.message);
+                showSendingIndicator(false);
+                return;
+            }
+            showSendingIndicator(false);
+            // Clear preview
+            pendingCommentFile = null;
+            document.getElementById("commentMediaPreview").style.display = "none";
+            document.getElementById("commentMediaPreviewImg").src = "";
+        }
+
         document.getElementById("commentInput").value = "";
 
         await push(ref(db, `threads/${forumId}/${threadId}/comments`), {
             author: currentUser.username,
-            text,
+            text: text || "",
+            mediaUrl: mediaUrl || null,
+            mediaType: mediaType || null,
             timestamp: serverTimestamp()
         });
     });
@@ -927,8 +1069,6 @@ window.addEventListener("popstate", e => {
 });
 
 // ===== NEW THREAD =====
-// BUG FIX #2: modal textarea now has id="threadBodyInput" to avoid collision
-// with the thread display container id="threadPostContent"
 const newThreadModal  = document.getElementById("newThreadModal");
 const cancelThreadBtn = document.getElementById("cancelThreadBtn");
 const saveThreadBtn   = document.getElementById("saveThreadBtn");
@@ -1009,12 +1149,10 @@ saveProfileBtn.addEventListener("click", async () => {
 
     const oldName = currentUser.username;
 
-    // Cek apakah username sudah dipakai orang lain
     if (newName !== oldName) {
         const existing = await get(ref(db, `profiles/${newName}`));
         if (existing.exists()) {
             const existingUserId = existing.val().userId;
-            // Kalau ada profil dengan nama itu tapi bukan punya kita → tolak
             if (!existingUserId || existingUserId !== MY_USER_ID) {
                 alert(`Username "@${newName}" sudah dipakai. Coba username lain.`);
                 return;
@@ -1022,16 +1160,19 @@ saveProfileBtn.addEventListener("click", async () => {
         }
     }
 
+    // FIX: Mark old presence offline before renaming
+    if (newName !== oldName) {
+        await set(ref(db, `presence/${oldName}`), { online: false, last: serverTimestamp() });
+    }
+
     currentUser.username = newName;
     currentUser.bio = newBio;
     localStorage.setItem("user", JSON.stringify(currentUser));
 
-    // Hapus profile lama kalau username berubah
     if (newName !== oldName) {
         await remove(ref(db, `profiles/${oldName}`));
     }
 
-    // Update profile node — simpan userId supaya bisa verifikasi kepemilikan
     await set(ref(db, `profiles/${newName}`), {
         username: newName,
         bio: newBio,
@@ -1039,9 +1180,9 @@ saveProfileBtn.addEventListener("click", async () => {
         userId: MY_USER_ID
     });
 
-    // Update userId → username mapping so all rendered messages update in realtime
     await set(ref(db, `userIds/${MY_USER_ID}`), newName);
 
+    // FIX: Set new presence with new name
     await heartbeat();
     renderUser();
     profileModal.classList.remove("active");
@@ -1056,7 +1197,6 @@ avatarInput.addEventListener("change", async e => {
         const url = await uploadMedia(file);
         currentUser.avatar = url;
         localStorage.setItem("user", JSON.stringify(currentUser));
-
         await update(ref(db, `profiles/${currentUser.username}`), { avatar: url });
     } catch(err) {
         alert("Avatar upload failed.");
@@ -1065,20 +1205,17 @@ avatarInput.addEventListener("change", async e => {
 });
 
 // ===== INIT =====
-// Save profile on load
 set(ref(db, `profiles/${currentUser.username}`), {
     username: currentUser.username,
     bio: currentUser.bio || "No bio yet.",
     avatar: currentUser.avatar || null
 });
 
-// Start online presence listener (always active)
 listenOnlineUsers();
-
-// Start realtime username cache (always active)
 listenUserIdMap();
+listenGlobalBadge();
+listenDMBadge();
 
-// Register this device's userId → username on load
 set(ref(db, `userIds/${MY_USER_ID}`), currentUser.username);
 
 history.replaceState({ page: "home" }, "", "#/");
