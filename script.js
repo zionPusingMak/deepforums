@@ -40,30 +40,15 @@ function listenUserIdMap() {
 }
 
 // ===== FFMPEG VIDEO COMPRESSOR =====
-// Pakai @ffmpeg/ffmpeg UMD + @ffmpeg/core UMD (single-thread, no SharedArrayBuffer).
-// @ffmpeg/util tidak ada UMD build — fetchFile diimplementasi manual via fetch + Uint8Array.
-// toBlobURL juga diimplementasi manual supaya tidak tergantung package eksternal.
+// Pakai @ffmpeg/ffmpeg@0.11.x — versi lama yang single-file, no chunk splitting,
+// no worker spawn issue, works langsung di browser tanpa self-hosting.
 
 let _ffmpegInstance = null;
 let _ffmpegLoaded   = false;
 let _ffmpegLoading  = false;
 
-// Manual toBlobURL — download resource lalu bungkus jadi blob URL
-async function _toBlobURL(url, mimeType) {
-    const res  = await fetch(url);
-    const buf  = await res.arrayBuffer();
-    const blob = new Blob([buf], { type: mimeType });
-    return URL.createObjectURL(blob);
-}
-
-// Manual fetchFile — ambil File/Blob dan convert ke Uint8Array
-async function _fetchFile(file) {
-    return new Uint8Array(await file.arrayBuffer());
-}
-
 async function loadFFmpeg() {
     if (_ffmpegLoaded) return _ffmpegInstance;
-
     if (_ffmpegLoading) {
         while (_ffmpegLoading) await new Promise(r => setTimeout(r, 80));
         return _ffmpegInstance;
@@ -73,19 +58,15 @@ async function loadFFmpeg() {
     showSendingIndicator(true);
 
     try {
-        // Load ffmpeg UMD — expose window.FFmpegWASM
-        await _loadScript("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.min.js");
+        await _loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js");
 
-        const { FFmpeg } = window.FFmpegWASM;
-        _ffmpegInstance  = new FFmpeg();
-
-        // Core UMD single-thread (tidak butuh SharedArrayBuffer)
-        // Semua file di-toBlobURL supaya tidak kena blokir COEP
-        const coreBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
-        await _ffmpegInstance.load({
-            coreURL: await _toBlobURL(`${coreBase}/ffmpeg-core.js`,   "text/javascript"),
-            wasmURL: await _toBlobURL(`${coreBase}/ffmpeg-core.wasm`, "application/wasm"),
+        const { createFFmpeg } = window.FFmpeg;
+        _ffmpegInstance = createFFmpeg({
+            corePath: "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
+            log: false,
         });
+
+        await _ffmpegInstance.load();
 
         _ffmpegLoaded  = true;
         _ffmpegLoading = false;
@@ -98,106 +79,68 @@ async function loadFFmpeg() {
     }
 }
 
-// Helper: inject <script> tag dan tunggu load selesai (idempotent)
 function _loadScript(src) {
     return new Promise((resolve, reject) => {
         if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-        const s  = document.createElement("script");
-        s.src    = src;
+        const s   = document.createElement("script");
+        s.src     = src;
         s.onload  = resolve;
         s.onerror = () => reject(new Error("Gagal load script: " + src));
         document.head.appendChild(s);
     });
 }
 
-/**
- * Compress video menggunakan ffmpeg.wasm.
- * Mirip kompresi WhatsApp / Instagram:
- *   - Pass 1: CRF 28, max 1280x720, AAC 128k
- *   - Pass 2 (kalau masih > 28MB): CRF 35, max 854x480, AAC 96k
- * Kalau file sudah kecil (<= 10MB), skip compress.
- */
 async function compressVideo(file) {
-    const MAX_UPLOAD_BYTES = 28 * 1024 * 1024; // 28MB safety margin dari limit 30MB
-
-    // Skip kalau sudah kecil banget
-    if (file.size <= 10 * 1024 * 1024) {
-        console.log("[ffmpeg] video kecil (<10MB), skip compress");
-        return file;
-    }
+    const MAX_BYTES = 28 * 1024 * 1024;
+    if (file.size <= 10 * 1024 * 1024) return file;
 
     showSendingIndicator(true);
 
     try {
-        const ff = await loadFFmpeg();
-        
-
-        const ext     = (file.name.split(".").pop() || "mp4").toLowerCase();
+        const ff  = await loadFFmpeg();
+        const ext = (file.name.split(".").pop() || "mp4").toLowerCase();
         const inName  = `input.${ext}`;
         const outName = "output.mp4";
 
-        await ff.writeFile(inName, await _fetchFile(file));
+        ff.FS("writeFile", inName, new Uint8Array(await file.arrayBuffer()));
 
-        // --- Pass 1: kualitas bagus, max 720p ---
-        await ff.exec([
+        // Pass 1 — CRF 28, max 720p
+        await ff.run(
             "-i", inName,
-            "-c:v", "libx264",
-            "-crf", "28",
-            "-preset", "fast",
-            // scale: pertahankan aspect ratio, max 1280x720
-            "-vf", "scale='if(gt(iw,ih),min(1280,iw),min(1280,ih))':'if(gt(iw,ih),min(720,ih),min(720,iw))':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-c:v", "libx264", "-crf", "28", "-preset", "fast",
+            "-vf", "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease",
+            "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",
-            "-y",
-            outName
-        ]);
+            "-y", outName
+        );
 
-        let data       = await ff.readFile(outName);
+        let data = ff.FS("readFile", outName);
         let compressed = new File([data.buffer], "compressed.mp4", { type: "video/mp4" });
+        console.log(`[ffmpeg] ${(file.size/1024/1024).toFixed(1)}MB → ${(compressed.size/1024/1024).toFixed(1)}MB`);
 
-        console.log(`[ffmpeg] pass1: ${(file.size/1024/1024).toFixed(1)}MB → ${(compressed.size/1024/1024).toFixed(1)}MB`);
+        try { ff.FS("unlink", inName);  } catch(_) {}
+        try { ff.FS("unlink", outName); } catch(_) {}
 
-        // Cleanup pass 1 input
-        try { await ff.deleteFile(inName); } catch(_) {}
-
-        // --- Pass 2: kalau masih > 28MB, compress lebih agresif ---
-        if (compressed.size > MAX_UPLOAD_BYTES) {
-            showSendingIndicator(true);
-
-            const in2Name  = "input2.mp4";
-            const out2Name = "output2.mp4";
-
-            await ff.writeFile(in2Name, await _fetchFile(compressed));
-
-            await ff.exec([
-                "-i", in2Name,
-                "-c:v", "libx264",
-                "-crf", "35",
-                "-preset", "fast",
-                // max 480p
-                "-vf", "scale='if(gt(iw,ih),min(854,iw),min(854,ih))':'if(gt(iw,ih),min(480,ih),min(480,iw))':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                "-c:a", "aac",
-                "-b:a", "96k",
+        // Pass 2 — kalau masih gede, 480p lebih agresif
+        if (compressed.size > MAX_BYTES) {
+            ff.FS("writeFile", "input2.mp4", new Uint8Array(await compressed.arrayBuffer()));
+            await ff.run(
+                "-i", "input2.mp4",
+                "-c:v", "libx264", "-crf", "35", "-preset", "fast",
+                "-vf", "scale='min(854,iw)':'min(480,ih)':force_original_aspect_ratio=decrease",
+                "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart",
-                "-y",
-                out2Name
-            ]);
-
-            const data2 = await ff.readFile(out2Name);
+                "-y", "output2.mp4"
+            );
+            const data2 = ff.FS("readFile", "output2.mp4");
             compressed  = new File([data2.buffer], "compressed.mp4", { type: "video/mp4" });
-
-            console.log(`[ffmpeg] pass2: → ${(compressed.size/1024/1024).toFixed(1)}MB`);
-
-            try { await ff.deleteFile(in2Name);  } catch(_) {}
-            try { await ff.deleteFile(out2Name); } catch(_) {}
-        } else {
-            try { await ff.deleteFile(outName); } catch(_) {}
+            console.log(`[ffmpeg] pass2 → ${(compressed.size/1024/1024).toFixed(1)}MB`);
+            try { ff.FS("unlink", "input2.mp4");  } catch(_) {}
+            try { ff.FS("unlink", "output2.mp4"); } catch(_) {}
         }
 
-        // Kalau setelah 2 pass masih > 28MB, lempar error biar user tau
-        if (compressed.size > MAX_UPLOAD_BYTES) {
-            throw new Error(`Video masih terlalu besar (${(compressed.size/1024/1024).toFixed(1)}MB) setelah kompresi. Coba video yang lebih pendek.`);
+        if (compressed.size > MAX_BYTES) {
+            throw new Error(`Video masih terlalu besar setelah kompresi (${(compressed.size/1024/1024).toFixed(1)}MB). Coba video lebih pendek.`);
         }
 
         return compressed;
