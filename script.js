@@ -939,7 +939,10 @@ function openForum(forum) {
 function renderThreads(forumId) {
     forumListEl.innerHTML = "";
 
-    const threadsRef = query(ref(db, `threads/${forumId}`), orderByChild("timestamp"));
+    // FIX: jangan pakai orderByChild("timestamp") karena Firebase skip nodes
+    // yang tidak punya field timestamp — thread lama jadi hilang.
+    // Ambil semua dulu, sort manual di client side.
+    const threadsRef = ref(db, `threads/${forumId}`);
     const unsub = onValue(threadsRef, snap => {
         forumListEl.innerHTML = "";
 
@@ -952,7 +955,9 @@ function renderThreads(forumId) {
         }
 
         const threadArr = [];
-        snap.forEach(child => { threadArr.unshift({ id: child.key, ...child.val() }); });
+        snap.forEach(child => { threadArr.push({ id: child.key, ...child.val() }); });
+        // Sort descending by timestamp, thread tanpa timestamp tetap masuk (ditaruh di akhir)
+        threadArr.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
         threadArr.forEach((thread, index) => {
             const div = document.createElement("div");
