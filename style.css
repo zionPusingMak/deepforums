@@ -521,6 +521,9 @@ main {
     font-size: 13px;
     color: var(--accent);
     margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .dm-item-preview {
@@ -529,6 +532,49 @@ main {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* ===== NOTIFICATION BADGES ===== */
+/* Badge on sidebar nav links (Global Chat, Messages) */
+.nav-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    background: var(--danger);
+    color: #fff;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 10px;
+    margin-left: auto;
+    animation: badgePop 0.2s ease;
+    line-height: 1;
+}
+
+@keyframes badgePop {
+    from { transform: scale(0.5); opacity: 0; }
+    to   { transform: scale(1); opacity: 1; }
+}
+
+/* Badge inside DM list items */
+.dm-item-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    background: var(--danger);
+    color: #fff;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 10px;
+    line-height: 1;
+    animation: badgePop 0.2s ease;
 }
 
 /* ===== USER PROFILE VIEW ===== */
@@ -676,6 +722,7 @@ main {
     font-size: 15px;
     font-family: 'IBM Plex Mono', monospace;
     transition: background 0.2s, color 0.2s;
+    position: relative;
 }
 .sidebar-nav a i {
     width: 18px;
@@ -828,6 +875,57 @@ main {
     font-weight: 700;
 }
 .modal-actions button:last-child:hover { opacity: 0.9; }
+
+/* ===== COMMENT MEDIA ===== */
+.comment-media {
+    display: block;
+    max-width: 280px;
+    max-height: 220px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin-top: 8px;
+    object-fit: cover;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.comment-media:hover { opacity: 0.85; }
+
+/* Preview strip inside comment bar */
+.comment-media-preview {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    background: #252525;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 5px 8px;
+    flex-shrink: 0;
+}
+
+.comment-media-preview img {
+    width: 56px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+}
+
+.comment-media-preview button {
+    background: #333;
+    border: none;
+    color: var(--text-muted);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, color 0.2s;
+    flex-shrink: 0;
+}
+.comment-media-preview button:hover { background: var(--danger); color: #fff; }
 
 /* ===== EMPTY MSG ===== */
 .empty-msg {
