@@ -141,10 +141,14 @@
         <input type="text" id="threadTitleInput" placeholder="Thread title...">
         <label>Content</label>
         <textarea id="threadBodyInput" style="height:120px;" placeholder="What's on your mind?"></textarea>
-        <label>Image (optional)</label>
-        <input type="file" id="threadImageInput" accept="image/*">
-        <label>Video URL (optional)</label>
-        <input type="text" id="threadVideoInput" placeholder="https://youtube.com/...">
+        <label>Media (optional)</label>
+        <div class="thread-media-inputs">
+            <label class="media-pick-btn" for="threadImageInput"><i class="fa-solid fa-image"></i> Image</label>
+            <input type="file" id="threadImageInput" accept="image/*" style="display:none;">
+            <label class="media-pick-btn" for="threadVideoInput"><i class="fa-solid fa-video"></i> Video</label>
+            <input type="file" id="threadVideoInput" accept="video/*" style="display:none;">
+        </div>
+        <div id="threadMediaPreview" style="display:none; margin-top:8px;"></div>
         <div class="modal-actions">
             <button id="cancelThreadBtn">Cancel</button>
             <button id="saveThreadBtn">Post</button>
