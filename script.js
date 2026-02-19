@@ -40,8 +40,14 @@ function listenUserIdMap() {
 }
 
 // ===== FFMPEG VIDEO COMPRESSOR =====
-// Lazy-load ffmpeg.wasm hanya saat pertama kali ada video yang mau di-compress.
-// Menggunakan CDN jsdelivr — tidak butuh install npm.
+// Menggunakan @ffmpeg/ffmpeg via script tag UMD (di index.html).
+// Cara ini menghindari COEP worker-spawn issue karena ffmpeg.js
+// me-load worker-nya sendiri via inline blob, bukan URL eksternal.
+//
+// Versi yang dipakai:
+//   ffmpeg : @ffmpeg/ffmpeg@0.12.10  (UMD, via window.FFmpegWASM)
+//   util   : @ffmpeg/util@0.12.1     (UMD, via window.FFmpegUtil)
+//   core   : @ffmpeg/core-st@0.12.6  (single-thread, no SharedArrayBuffer needed)
 
 let _ffmpegInstance = null;
 let _ffmpegLoaded   = false;
@@ -59,39 +65,23 @@ async function loadFFmpeg() {
     showSendingIndicator(true);
 
     try {
-        const { FFmpeg } = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js");
-        const { toBlobURL, fetchFile: _fetchFile } = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js");
+        // Load UMD scripts kalau belum ada (lazy, hanya sekali)
+        await _loadScript("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.min.js");
+        await _loadScript("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/util.min.js");
 
-        window.__ffFetchFile = _fetchFile;
+        const { FFmpeg }                   = window.FFmpegWASM;
+        const { toBlobURL, fetchFile: ff } = window.FFmpegUtil;
+
+        window.__ffFetchFile = ff;
         _ffmpegInstance = new FFmpeg();
 
-        // Semua resource (termasuk worker.js) wajib di-toBlobURL-kan
-        // supaya tidak kena block COEP di Vercel / origin yang strict.
-        let coreLoaded = false;
-
-        if (typeof SharedArrayBuffer !== "undefined") {
-            try {
-                const mtBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
-                await _ffmpegInstance.load({
-                    coreURL:   await toBlobURL(`${mtBase}/ffmpeg-core.js`,        "text/javascript"),
-                    wasmURL:   await toBlobURL(`${mtBase}/ffmpeg-core.wasm`,      "application/wasm"),
-                    workerURL: await toBlobURL(`${mtBase}/ffmpeg-core.worker.js`, "text/javascript"),
-                });
-                coreLoaded = true;
-            } catch (e) {
-                console.warn("[ffmpeg] MT load failed, trying ST:", e.message);
-                // Reset instance supaya bisa di-load ulang dengan ST
-                _ffmpegInstance = new FFmpeg();
-            }
-        }
-
-        if (!coreLoaded) {
-            const stBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.12.6/dist/esm";
-            await _ffmpegInstance.load({
-                coreURL: await toBlobURL(`${stBase}/ffmpeg-core.js`,   "text/javascript"),
-                wasmURL: await toBlobURL(`${stBase}/ffmpeg-core.wasm`, "application/wasm"),
-            });
-        }
+        // Single-thread core — tidak butuh SharedArrayBuffer, works everywhere
+        // termasuk Vercel dengan COEP header.
+        const stBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.12.6/dist/esm";
+        await _ffmpegInstance.load({
+            coreURL: await toBlobURL(`${stBase}/ffmpeg-core.js`,   "text/javascript"),
+            wasmURL: await toBlobURL(`${stBase}/ffmpeg-core.wasm`, "application/wasm"),
+        });
 
         _ffmpegLoaded  = true;
         _ffmpegLoading = false;
@@ -102,6 +92,19 @@ async function loadFFmpeg() {
         showSendingIndicator(false);
         throw new Error("Gagal load video compressor: " + e.message);
     }
+}
+
+// Helper: inject <script> tag dan tunggu sampai load
+function _loadScript(src) {
+    return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+        const s = document.createElement("script");
+        s.src = src;
+        s.crossOrigin = "anonymous";
+        s.onload  = resolve;
+        s.onerror = () => reject(new Error("Gagal load script: " + src));
+        document.head.appendChild(s);
+    });
 }
 
 /**
