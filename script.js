@@ -18,20 +18,23 @@ const db  = getDatabase(app);
 // ===== XSS PROTECTION =====
 // All user data rendered via textContent or DOM API — never raw innerHTML with user input.
 
-// ===== MEDIA UPLOAD — pakai CDN sendiri, bukan Firebase Storage =====
+// ===== MEDIA UPLOAD — langsung dari browser ke catbox.moe =====
+// Bypass Vercel serverless (limit 4.5MB) dengan upload direct ke catbox.moe
 async function uploadMedia(file) {
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("reqtype", "fileupload");
+    formData.append("fileToUpload", file);
 
-    const res = await fetch("/api/upload", {
+    const res = await fetch("https://catbox.moe/user/api.php", {
         method: "POST",
-        headers: { "Authorization": "admin-secret-key" },
         body: formData
     });
 
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message || "Upload failed");
-    return data.imageUrl; // URL dari cdn.yupra.my.id atau catbox.moe
+    const url = await res.text();
+    if (!url || !url.startsWith("https://")) {
+        throw new Error("Upload ke catbox gagal: " + url);
+    }
+    return url.trim();
 }
 
 // ===== USER (still localStorage for session identity) =====
