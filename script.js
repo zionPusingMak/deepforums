@@ -58,11 +58,12 @@ async function loadFFmpeg() {
     showSendingIndicator(true);
 
     try {
-        await _loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js");
+        await _loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.11.2/dist/ffmpeg.min.js");
 
         const { createFFmpeg } = window.FFmpeg;
         _ffmpegInstance = createFFmpeg({
             corePath: "https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js",
+            mainName: "main",
             log: false,
         });
 
