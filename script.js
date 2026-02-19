@@ -293,7 +293,7 @@ window.addEventListener("beforeunload", () => {
 // ===== FORUMS =====
 const forums = [
     { id: "general", name: "general", desc: "General discussion" },
-    { id: "tech",    name: "tech",    desc: "Technology & coding" },
+    { id: "gore",    name: "gore",    desc: "Things that should you never see" },
     { id: "random",  name: "random",  desc: "Anything goes here" }
 ];
 
