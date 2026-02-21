@@ -876,95 +876,6 @@ main {
 }
 .modal-actions button:last-child:hover { opacity: 0.9; }
 
-/* ===== THREAD MODAL MEDIA PICKER ===== */
-.thread-media-inputs {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 6px;
-}
-
-.media-pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 14px;
-    background: #1e1e1e;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text-muted);
-    font-family: "JetBrains Mono", monospace;
-    font-size: 12px;
-    cursor: pointer;
-    transition: border-color 0.2s, color 0.2s, background 0.2s;
-    letter-spacing: 0.3px;
-}
-.media-pick-btn:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: rgba(77,166,255,0.07);
-}
-
-/* Preview grid inside modal */
-.thread-media-preview-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 8px;
-}
-
-.thread-preview-item {
-    position: relative;
-    width: calc(33.33% - 6px);
-    min-width: 80px;
-    border-radius: 6px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    background: #111;
-}
-
-.thread-preview-item img,
-.thread-preview-item video {
-    width: 100%;
-    height: 90px;
-    object-fit: cover;
-    display: block;
-}
-
-.thread-preview-remove {
-    position: absolute;
-    top: 4px; right: 4px;
-    width: 20px; height: 20px;
-    background: rgba(0,0,0,0.75);
-    border: none;
-    border-radius: 50%;
-    color: #fff;
-    font-size: 10px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-}
-.thread-preview-remove:hover { background: var(--danger); }
-
-/* Thread media grid in post view */
-.thread-media-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 10px;
-    margin-top: 16px;
-}
-
-.thread-media-item {
-    width: 100%;
-    max-height: 320px;
-    object-fit: cover;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    display: block;
-}
-
 /* ===== COMMENT MEDIA ===== */
 .comment-media {
     display: block;
@@ -1021,4 +932,4 @@ main {
     color: var(--text-muted);
     font-size: 14px;
     padding: 8px 0;
-    }
+}

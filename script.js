@@ -40,103 +40,20 @@ function listenUserIdMap() {
 }
 
 // ===== MEDIA UPLOAD =====
-const MAX_VIDEO_BYTES = 28 * 1024 * 1024; // 28MB
-
 async function uploadMedia(file) {
-    console.log("Uploading file:", file.name, "Size:", file.size, "Type:", file.type); // Debug log
-    
-    if (file.type.startsWith("video/") && file.size > MAX_VIDEO_BYTES) {
-        throw new Error(`Video terlalu besar (${(file.size/1024/1024).toFixed(1)}MB). Maksimal 28MB.`);
-    }
-
-    try {
-        console.log("Trying Yupra upload...");
-        const url = await uploadToYupra(file);
-        console.log("Yupra upload success:", url);
-        return url;
-    } catch(e) {
-        console.warn("Yupra failed, trying pomf:", e.message);
-        try {
-            const url = await uploadToPomf(file);
-            console.log("Pomf upload success:", url);
-            return url;
-        } catch(e2) {
-            console.error("Both upload services failed:", e.message, e2.message);
-            throw new Error("Upload gagal ke semua service. Coba lagi nanti.");
-        }
-    }
-}
-
-async function uploadToYupra(file) {
     const formData = new FormData();
-    const ext = (file.name && file.name.includes("."))
-        ? file.name.split(".").pop()
-        : (file.type.split("/")[1] || "bin");
-    const filename = (file.name && file.name !== "") ? file.name : ("upload." + ext);
-    formData.append("files", file, filename);
+    formData.append("files", file);
 
     const res = await fetch("https://cdn.yupra.my.id/upload", {
         method: "POST",
         body: formData
     });
 
-    if (!res.ok) {
-        throw new Error(`Yupra HTTP error: ${res.status} ${res.statusText}`);
-    }
-
-    const text = await res.text();
-    console.log("Yupra response:", text.substring(0, 200)); // Debug log
-    
-    let data;
-    try { data = JSON.parse(text); }
-    catch(e) { 
-        console.error("Yupra JSON parse error:", text.slice(0, 200));
-        throw new Error("Yupra response invalid: " + text.slice(0, 80)); 
-    }
-
+    const data = await res.json();
     if (!data.success || !data.files || data.files.length === 0) {
-        throw new Error(data.message || "Yupra upload failed");
+        throw new Error("Upload ke CDN gagal");
     }
-    
-    const url = "https://cdn.yupra.my.id" + data.files[0].url;
-    console.log("Yupra final URL:", url);
-    return url;
-}
-
-async function uploadToPomf(file) {
-    const formData = new FormData();
-    const ext = (file.name && file.name.includes("."))
-        ? file.name.split(".").pop()
-        : (file.type.split("/")[1] || "bin");
-    const filename = (file.name && file.name !== "") ? file.name : ("upload." + ext);
-    formData.append("files[]", file, filename);
-
-    const res = await fetch("https://pomf2.lain.la/upload.php", {
-        method: "POST",
-        body: formData
-    });
-
-    if (!res.ok) {
-        throw new Error(`Pomf HTTP error: ${res.status} ${res.statusText}`);
-    }
-
-    const text = await res.text();
-    console.log("Pomf response:", text.substring(0, 200)); // Debug log
-    
-    let data;
-    try { data = JSON.parse(text); }
-    catch(e) { 
-        console.error("Pomf JSON parse error:", text.slice(0, 200));
-        throw new Error("Pomf response invalid: " + text.slice(0, 80)); 
-    }
-
-    if (!data.success || !data.files || data.files.length === 0) {
-        throw new Error("Pomf upload failed: " + text.slice(0, 80));
-    }
-    
-    const url = "https://pomf2.lain.la" + data.files[0].url;
-    console.log("Pomf final URL:", url);
-    return url;
+    return "https://cdn.yupra.my.id" + data.files[0].url;
 }
 
 // ===== USER =====
@@ -156,8 +73,8 @@ let currentUser = JSON.parse(localStorage.getItem("user")) || {
     avatar: null
 };
 
-let currentForum    = null;
-let currentDMUser   = null;
+let currentForum   = null;
+let currentDMUser  = null;
 let currentThreadId = null;
 let currentForumId  = null;
 
@@ -170,7 +87,17 @@ function clearListeners() {
 }
 
 // ===== NOTIFICATION BADGES =====
+// Konsep: HANYA tampilkan badge kalau ada pesan BARU dari orang lain
+// yang dateng setelah kita terakhir buka channel tersebut.
+// "Terakhir buka" disimpan sebagai server timestamp snapshot key —
+// kita catat Firebase key terakhir yang ada saat kita buka/tutup channel.
+// Dengan ini: ganti username pun ga pengaruh (pakai userId, bukan username).
+
+// In-memory badge counters (reset tiap reload — sama kayak WA/TG)
 const _badgeCount = { global: 0, dm: 0 };
+
+// Catat Firebase key terakhir per channel saat dibuka
+// Format: { global: "-NxyzLastKey", dm_ali: "-NabcLastKey" }
 const _lastReadKey = JSON.parse(sessionStorage.getItem("lastReadKey") || "{}");
 
 function _saveLastReadKey() {
@@ -178,7 +105,8 @@ function _saveLastReadKey() {
 }
 
 function showBadge(target, count) {
-    const id  = target === "global" ? "navGlobalChat" : "navDMs";
+    // target: "global" | "dm"
+    const id = target === "global" ? "navGlobalChat" : "navDMs";
     const btn = document.getElementById(id);
     if (!btn) return;
     let badge = btn.querySelector(".nav-badge");
@@ -194,76 +122,109 @@ function showBadge(target, count) {
     }
 }
 
+// Dipanggil saat buka Global Chat → catat key terakhir, reset badge
 function markGlobalRead() {
     _badgeCount.global = 0;
     showBadge("global", 0);
+    // Catat key terakhir yang ada sekarang
     get(query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(1))).then(snap => {
         snap.forEach(child => { _lastReadKey["global"] = child.key; });
         _saveLastReadKey();
     });
 }
 
+// Dipanggil saat buka DM convo → reset badge untuk DM itu
 function markDMRead(otherUsername) {
     const dmKey = getDMKey(currentUser.username, otherUsername);
     get(query(ref(db, `dms/${dmKey}`), orderByChild("timestamp"), limitToLast(1))).then(snap => {
         snap.forEach(child => { _lastReadKey[`dm_${otherUsername}`] = child.key; });
         _saveLastReadKey();
     });
+    // Recalculate total DM badge (subtract this convo's unread)
     _recalcDMBadge();
 }
 
 function _recalcDMBadge() {
+    // Hitung ulang dari in-memory state
+    // Ini dipanggil setelah markDMRead — badge akan berkurang
+    // Actual count dikelola oleh listenDMBadge onChildAdded
+    // Di sini kita cukup hide badge kalau _badgeCount.dm <= 0
     if (_badgeCount.dm <= 0) {
         _badgeCount.dm = 0;
         showBadge("dm", 0);
     }
 }
 
+// Listen global chat — hanya pesan dengan timestamp > APP_START_TIME
+// startAt memastikan Firebase hanya kirim pesan baru, bukan existing
 const APP_START_TIME = Date.now();
 
 function listenGlobalBadge() {
+    // Query hanya pesan yang timestamp-nya >= saat app dibuka
     const chatRef = query(
         ref(db, "global_chat"),
         orderByChild("timestamp"),
         startAt(APP_START_TIME)
     );
+
     onChildAdded(chatRef, (child) => {
         const m = child.val();
-        if (m.userId === MY_USER_ID) return;
-        if (document.getElementById("globalChatView").style.display !== "none") return;
+        if (m.userId === MY_USER_ID) return; // pesan sendiri, skip
+
+        // Kalau global chat sedang dibuka, ga perlu badge
+        if (document.getElementById("globalChatView").style.display !== "none") {
+            return;
+        }
+
         _badgeCount.global++;
         showBadge("global", _badgeCount.global);
     });
 }
 
+// Listen DM — hanya pesan baru dari orang lain setelah app load
 function listenDMBadge() {
+    // Watch daftar DM rooms dulu, baru pasang listener per room
     const registeredRooms = new Set();
-    onChildAdded(ref(db, "dms"), (roomSnap) => {
-        const roomKey = roomSnap.key;
-        if (registeredRooms.has(roomKey)) return;
-        const parts    = roomKey.split("__");
-        const involveMe = parts.includes(currentUser.username);
-        if (!involveMe) return;
-        registeredRooms.add(roomKey);
-        const other = parts.find(u => u !== currentUser.username);
-        const roomRef = query(
-            ref(db, `dms/${roomKey}`),
-            orderByChild("timestamp"),
-            startAt(APP_START_TIME)
-        );
-        onChildAdded(roomRef, (child) => {
-            const m = child.val();
-            if (m.userId === MY_USER_ID) return;
-            if (!m.userId && m.author === currentUser.username) return;
-            if (currentDMUser === other &&
-                document.getElementById("dmConvoView").style.display !== "none") return;
-            _badgeCount.dm++;
-            showBadge("dm", _badgeCount.dm);
+
+    onValue(ref(db, "dms"), snap => {
+        const data = snap.val() || {};
+        Object.keys(data).forEach(roomKey => {
+            if (registeredRooms.has(roomKey)) return; // sudah dipasang listener
+
+            const parts = roomKey.split("__");
+            if (!parts.includes(currentUser.username)) return;
+
+            registeredRooms.add(roomKey);
+            const other = parts.find(u => u !== currentUser.username);
+
+            // startAt APP_START_TIME → hanya pesan yang dateng setelah app dibuka
+            const roomRef = query(
+                ref(db, `dms/${roomKey}`),
+                orderByChild("timestamp"),
+                startAt(APP_START_TIME)
+            );
+
+            onChildAdded(roomRef, (child) => {
+                const m = child.val();
+                // Skip pesan sendiri
+                if (m.userId === MY_USER_ID) return;
+                if (!m.userId && m.author === currentUser.username) return;
+
+                // Kalau lagi buka DM dengan orang ini, ga perlu badge
+                if (currentDMUser === other &&
+                    document.getElementById("dmConvoView").style.display !== "none") {
+                    return;
+                }
+
+                _badgeCount.dm++;
+                showBadge("dm", _badgeCount.dm);
+            });
         });
     });
 }
 
 // ===== ONLINE PRESENCE =====
+// FIX: Use dynamic function so rename updates presence correctly
 function getPresenceRef() {
     return ref(db, `presence/${currentUser.username}`);
 }
@@ -275,8 +236,8 @@ async function heartbeat() {
 function listenOnlineUsers() {
     const onlineRef = ref(db, "presence");
     const unsub = onValue(onlineRef, snap => {
-        const data  = snap.val() || {};
-        const now   = Date.now();
+        const data = snap.val() || {};
+        const now = Date.now();
         const users = Object.entries(data)
             .filter(([, v]) => v.online && (now - (v.last || 0) < 60000))
             .map(([u]) => u);
@@ -287,11 +248,14 @@ function listenOnlineUsers() {
         users.forEach(u => {
             const div = document.createElement("div");
             div.className = "online-user";
-            const dot  = document.createElement("span");
+
+            const dot = document.createElement("span");
             dot.className = "online-dot";
+
             const name = document.createElement("span");
-            name.className  = "online-name";
+            name.className = "online-name";
             name.textContent = u;
+
             div.appendChild(dot);
             div.appendChild(name);
             div.addEventListener("click", () => {
@@ -336,67 +300,9 @@ function hideAllViews() {
     document.getElementById("userProfileView").style.display = "none";
 }
 
-// ===== SENDING INDICATOR =====
-function showSendingIndicator(show, label) {
-    let el = document.getElementById("sendingIndicator");
-    if (!el) {
-        el = document.createElement("div");
-        el.id = "sendingIndicator";
-        el.style.cssText = [
-            "position:fixed",
-            "bottom:70px",
-            "right:20px",
-            "background:#1e1e1e",
-            "border:1px solid #2a2a2a",
-            "color:#aaa",
-            "padding:6px 14px",
-            "border-radius:20px",
-            "font-size:12px",
-            "font-family:'JetBrains Mono',monospace",
-            "z-index:9999",
-            "display:none",
-            "gap:8px",
-            "align-items:center"
-        ].join(";");
-
-        const dot = document.createElement("span");
-        dot.id = "sendingDot";
-        dot.style.cssText = [
-            "width:7px",
-            "height:7px",
-            "border-radius:50%",
-            "background:#4da6ff",
-            "display:inline-block",
-            "animation:sendPulse 0.9s ease-in-out infinite"
-        ].join(";");
-
-        const lbl = document.createElement("span");
-        lbl.id = "sendingLabel";
-        lbl.textContent = "Uploading...";
-
-        el.appendChild(dot);
-        el.appendChild(lbl);
-        document.body.appendChild(el);
-
-        if (!document.getElementById("sendPulseStyle")) {
-            const style = document.createElement("style");
-            style.id = "sendPulseStyle";
-            style.textContent = "@keyframes sendPulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.2)}}";
-            document.head.appendChild(style);
-        }
-    }
-
-    if (label) {
-        const lbl = document.getElementById("sendingLabel");
-        if (lbl) lbl.textContent = label;
-    }
-
-    el.style.display = show ? "flex" : "none";
-}
-
 // ===== SHARED CHAT MESSAGE ELEMENT BUILDER =====
 function buildChatMsgEl(m, showClickableAuthor) {
-    const isMe    = m.userId === MY_USER_ID;
+    const isMe = m.userId === MY_USER_ID;
     const dateStr = m.timestamp
         ? new Date(m.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })
         : "";
@@ -411,11 +317,11 @@ function buildChatMsgEl(m, showClickableAuthor) {
     authorSpan.className = "chat-author" + (showClickableAuthor ? " clickable-user" : "");
     const displayName = (m.userId && userIdToUsername[m.userId]) ? userIdToUsername[m.userId] : m.author;
     authorSpan.textContent = displayName;
-    if (m.userId) authorSpan.dataset.userid   = m.userId;
+    if (m.userId) authorSpan.dataset.userid = m.userId;
     if (showClickableAuthor) authorSpan.dataset.username = displayName;
 
     const timeSpan = document.createElement("span");
-    timeSpan.className  = "chat-time";
+    timeSpan.className = "chat-time";
     timeSpan.textContent = dateStr;
 
     meta.appendChild(authorSpan);
@@ -424,55 +330,24 @@ function buildChatMsgEl(m, showClickableAuthor) {
 
     if (m.text) {
         const textDiv = document.createElement("div");
-        textDiv.className  = "chat-text";
+        textDiv.className = "chat-text";
         textDiv.textContent = m.text;
         wrapper.appendChild(textDiv);
     }
 
     if (m.mediaUrl) {
-        console.log("Media URL:", m.mediaUrl, "Type:", m.mediaType); // Debug log
-        
-        // Deteksi video dari mediaType ATAU ekstensi URL
-        const isVideo = (typeof m.mediaType === "string" && m.mediaType.startsWith("video/"))
-            || /\.(mp4|webm|mov|avi|mkv)(\?|$)/i.test(m.mediaUrl);
-        const isImage = !isVideo && (
-            (typeof m.mediaType === "string" && m.mediaType.startsWith("image/"))
-            || /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(m.mediaUrl)
-            || typeof m.mediaType !== "string"
-        );
-        
-        if (isVideo) {
+        const safeType = (typeof m.mediaType === "string") ? m.mediaType.split("/")[0] : "";
+        if (safeType === "video") {
             const vid = document.createElement("video");
             vid.className = "chat-media";
-            vid.controls  = true;
-            vid.src       = m.mediaUrl;
-            vid.onerror = () => {
-                console.error("Video failed to load:", m.mediaUrl);
-                const errorDiv = document.createElement("div");
-                errorDiv.className = "chat-text";
-                errorDiv.textContent = "⚠️ Video gagal dimuat";
-                errorDiv.style.color = "#ff5555";
-                wrapper.appendChild(errorDiv);
-            };
+            vid.controls = true;
+            vid.src = m.mediaUrl;
             wrapper.appendChild(vid);
-        } else if (isImage) {
+        } else if (safeType === "image") {
             const img = document.createElement("img");
             img.className = "chat-media";
-            img.alt       = "image";
-            img.src       = m.mediaUrl;
-            img.onerror = () => {
-                console.error("Image failed to load:", m.mediaUrl);
-                img.style.display = "none";
-                const errorDiv = document.createElement("div");
-                errorDiv.className = "chat-text";
-                errorDiv.textContent = "⚠️ Image gagal dimuat: " + m.mediaUrl.substring(0, 50) + "...";
-                errorDiv.style.color = "#ff5555";
-                errorDiv.style.fontSize = "11px";
-                wrapper.appendChild(errorDiv);
-            };
-            img.onload = () => {
-                console.log("Image loaded successfully:", m.mediaUrl);
-            };
+            img.alt = "image";
+            img.src = m.mediaUrl;
             wrapper.appendChild(img);
         }
     }
@@ -484,34 +359,39 @@ function buildChatMsgEl(m, showClickableAuthor) {
 function openGlobalChat() {
     hideAllViews();
     document.getElementById("globalChatView").style.display = "flex";
-    mainTitle.textContent          = "# global-chat";
-    newThreadBtn.style.display     = "none";
+    mainTitle.textContent = "# global-chat";
+    newThreadBtn.style.display = "none";
     closeSidebarFn();
+
+    // Mark as read
     markGlobalRead();
 
     const container = document.getElementById("globalChatMessages");
     container.innerHTML = "";
 
     const chatRef = query(ref(db, "global_chat"), orderByChild("timestamp"), limitToLast(100));
+
     const unsub = onChildAdded(chatRef, snap => {
-        const m  = snap.val();
+        const m = snap.val();
         const el = buildChatMsgEl(m, true);
         container.appendChild(el);
         attachUserClicks(el);
         container.scrollTop = container.scrollHeight;
+        // Badge is handled by listenGlobalBadge
     });
+
     activeListeners.push(() => unsub());
 }
 
 async function sendGlobalMessage(text, file) {
-    let mediaUrl  = null;
+    let mediaUrl = null;
     let mediaType = null;
 
     if (file) {
-        showSendingIndicator(true, "Uploading...");
+        showSendingIndicator(true);
         try {
-            mediaUrl  = await uploadMedia(file);
-            mediaType = file.type || null;
+            mediaUrl = await uploadMedia(file);
+            mediaType = file.type;
         } catch(e) {
             alert("Upload gagal: " + e.message);
             showSendingIndicator(false);
@@ -525,7 +405,7 @@ async function sendGlobalMessage(text, file) {
     await push(ref(db, "global_chat"), {
         userId: MY_USER_ID,
         author: currentUser.username,
-        text:   text || "",
+        text: text || "",
         mediaUrl,
         mediaType,
         timestamp: serverTimestamp()
@@ -534,7 +414,7 @@ async function sendGlobalMessage(text, file) {
 
 document.getElementById("globalChatSend").addEventListener("click", async () => {
     const input = document.getElementById("globalChatInput");
-    const text  = input.value.trim();
+    const text = input.value.trim();
     if (!text) return;
     input.value = "";
     await sendGlobalMessage(text, null);
@@ -564,7 +444,7 @@ function getDMKey(a, b) {
 function openDMList() {
     hideAllViews();
     document.getElementById("dmView").style.display = "block";
-    mainTitle.textContent      = "✉ Messages";
+    mainTitle.textContent = "✉ Messages";
     newThreadBtn.style.display = "none";
     closeSidebarFn();
 
@@ -572,23 +452,25 @@ function openDMList() {
     list.innerHTML = "";
 
     const dmsRef = ref(db, "dms");
-    const unsub  = onValue(dmsRef, snap => {
+    const unsub = onValue(dmsRef, snap => {
         const data = snap.val() || {};
         list.innerHTML = "";
 
         const myConvos = Object.entries(data)
             .filter(([key]) => key.includes(currentUser.username))
             .map(([key, msgs]) => {
-                const other  = key.split("__").find(u => u !== currentUser.username);
+                const other = key.split("__").find(u => u !== currentUser.username);
                 const msgArr = Object.values(msgs || {});
-                const last   = msgArr.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)).pop();
-                return { other, last, key };
+                const last = msgArr.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)).pop();
+                // Unread count: shown in badge on nav, not per-item here
+                const unread = 0;
+                return { other, last, key, unread };
             })
             .sort((a, b) => (b.last?.timestamp || 0) - (a.last?.timestamp || 0));
 
         if (myConvos.length === 0) {
             const p = document.createElement("p");
-            p.className  = "empty-msg";
+            p.className = "empty-msg";
             p.textContent = "No messages yet. Click a user's name to start a conversation.";
             list.appendChild(p);
             return;
@@ -600,10 +482,20 @@ function openDMList() {
 
             const nameDiv = document.createElement("div");
             nameDiv.className = "dm-item-name";
-            nameDiv.appendChild(document.createTextNode(c.other));
+
+            const nameText = document.createTextNode(c.other);
+            nameDiv.appendChild(nameText);
+
+            // Unread badge on DM item
+            if (c.unread > 0) {
+                const badge = document.createElement("span");
+                badge.className = "dm-item-badge";
+                badge.textContent = c.unread > 99 ? "99+" : c.unread;
+                nameDiv.appendChild(badge);
+            }
 
             const previewDiv = document.createElement("div");
-            previewDiv.className  = "dm-item-preview";
+            previewDiv.className = "dm-item-preview";
             previewDiv.textContent = c.last
                 ? (c.last.text ? c.last.text.substring(0, 50) : "[media]")
                 : "";
@@ -614,42 +506,48 @@ function openDMList() {
             list.appendChild(div);
         });
     });
+
     activeListeners.push(() => unsub());
 }
 
 function openDMConvo(username) {
     currentDMUser = username;
     hideAllViews();
-    document.getElementById("dmConvoView").style.display    = "flex";
-    document.getElementById("dmConvoName").textContent      = username;
-    mainTitle.textContent      = `✉ ${username}`;
+    document.getElementById("dmConvoView").style.display = "flex";
+    document.getElementById("dmConvoName").textContent = username;
+    mainTitle.textContent = `✉ ${username}`;
     newThreadBtn.style.display = "none";
+
+    // Mark this DM as read
     markDMRead(username);
 
     const container = document.getElementById("dmMessages");
     container.innerHTML = "";
 
-    const key    = getDMKey(currentUser.username, username);
-    const dmRef  = query(ref(db, `dms/${key}`), orderByChild("timestamp"), limitToLast(100));
-    const unsub  = onChildAdded(dmRef, snap => {
-        const m  = snap.val();
+    const key = getDMKey(currentUser.username, username);
+    const dmRef = query(ref(db, `dms/${key}`), orderByChild("timestamp"), limitToLast(100));
+
+    const unsub = onChildAdded(dmRef, snap => {
+        const m = snap.val();
         const el = buildChatMsgEl(m, false);
         container.appendChild(el);
         container.scrollTop = container.scrollHeight;
+        // Badge cleared by listenDMBadge when convo is open
     });
+
     activeListeners.push(() => unsub());
 }
 
 async function sendDMMessage(text, file) {
     if (!currentDMUser) return;
-    let mediaUrl  = null;
+    let mediaUrl = null;
     let mediaType = null;
 
     if (file) {
-        showSendingIndicator(true, "Uploading...");
+        showSendingIndicator(true);
         try {
-            mediaUrl  = await uploadMedia(file);
-            mediaType = file.type || null;
+            mediaUrl = await uploadMedia(file);
+            mediaType = file.type;
         } catch(e) {
             alert("Upload gagal: " + e.message);
             showSendingIndicator(false);
@@ -664,7 +562,7 @@ async function sendDMMessage(text, file) {
     await push(ref(db, `dms/${key}`), {
         userId: MY_USER_ID,
         author: currentUser.username,
-        text:   text || "",
+        text: text || "",
         mediaUrl,
         mediaType,
         timestamp: serverTimestamp()
@@ -673,7 +571,7 @@ async function sendDMMessage(text, file) {
 
 document.getElementById("dmSend").addEventListener("click", async () => {
     const input = document.getElementById("dmInput");
-    const text  = input.value.trim();
+    const text = input.value.trim();
     if (!text) return;
     input.value = "";
     await sendDMMessage(text, null);
@@ -699,28 +597,28 @@ document.getElementById("dmInput").addEventListener("keydown", e => {
 async function openUserProfile(username) {
     hideAllViews();
     document.getElementById("userProfileView").style.display = "block";
-    mainTitle.textContent      = `@${username}`;
+    mainTitle.textContent = `@${username}`;
     newThreadBtn.style.display = "none";
     closeSidebarFn();
 
-    const profileSnap    = await get(ref(db, `profiles/${username}`));
-    const profile        = profileSnap.val() || { username, bio: "No bio yet.", avatar: null };
-    const isMe           = username === currentUser.username;
+    const profileSnap = await get(ref(db, `profiles/${username}`));
+    const profile = profileSnap.val() || { username, bio: "No bio yet.", avatar: null };
+    const isMe = username === currentUser.username;
     const displayProfile = isMe ? currentUser : profile;
 
     document.getElementById("profileUsername").textContent = displayProfile.username;
-    document.getElementById("profileBio").textContent      = displayProfile.bio || "No bio yet.";
+    document.getElementById("profileBio").textContent = displayProfile.bio || "No bio yet.";
 
-    const avatarEl      = document.getElementById("profileAvatar");
+    const avatarEl = document.getElementById("profileAvatar");
     const placeholderEl = document.getElementById("profileAvatarPlaceholder");
     placeholderEl.textContent = displayProfile.username.charAt(0).toUpperCase();
 
     if (displayProfile.avatar) {
-        avatarEl.src           = displayProfile.avatar;
+        avatarEl.src = displayProfile.avatar;
         avatarEl.style.display = "block";
         placeholderEl.style.display = "none";
     } else {
-        avatarEl.style.display      = "none";
+        avatarEl.style.display = "none";
         placeholderEl.style.display = "flex";
     }
 
@@ -746,13 +644,13 @@ async function openUserProfile(username) {
 
     if (allThreads.length === 0) {
         const p = document.createElement("p");
-        p.className  = "empty-msg";
+        p.className = "empty-msg";
         p.textContent = "No threads yet.";
         profileThreadList.appendChild(p);
     } else {
         allThreads.forEach((t, i) => {
             const div = document.createElement("div");
-            div.className    = "forum-card";
+            div.className = "forum-card";
             div.style.animationDelay = `${i * 0.08}s`;
 
             const h3 = document.createElement("h3");
@@ -761,22 +659,26 @@ async function openUserProfile(username) {
             const p = document.createElement("p");
             p.textContent = (t.content || "").substring(0, 80) + ((t.content || "").length > 80 ? "..." : "");
 
-            const meta   = document.createElement("div");
+            const meta = document.createElement("div");
             meta.className = "thread-meta";
-            const fSpan  = document.createElement("span");
+
+            const fSpan = document.createElement("span");
             fSpan.textContent = `/${t.forumId}/`;
-            const cSpan  = document.createElement("span");
+
+            const cSpan = document.createElement("span");
             cSpan.textContent = `${Object.keys(t.comments || {}).length} comments`;
+
             meta.appendChild(fSpan);
             meta.appendChild(cSpan);
-
             div.appendChild(h3);
             div.appendChild(p);
             div.appendChild(meta);
+
             div.addEventListener("click", () => {
                 currentForum = forums.find(f => f.id === t.forumId);
                 openThread(t.id, t.forumId);
             });
+
             profileThreadList.appendChild(div);
         });
     }
@@ -795,17 +697,17 @@ function attachUserClicks(container) {
 // ===== RENDER FORUMS =====
 function renderForums() {
     currentForum = null;
-    mainTitle.textContent      = "All Forums";
+    mainTitle.textContent = "All Forums";
     newThreadBtn.style.display = "none";
 
     hideAllViews();
-    mainEl.style.display       = "block";
-    forumListEl.style.display  = "grid";
-    forumListEl.innerHTML      = "";
+    mainEl.style.display = "block";
+    forumListEl.style.display = "grid";
+    forumListEl.innerHTML = "";
 
     forums.forEach((forum, index) => {
         const div = document.createElement("div");
-        div.className            = "forum-card";
+        div.className = "forum-card";
         div.style.animationDelay = `${index * 0.15}s`;
 
         const h3 = document.createElement("h3");
@@ -815,7 +717,7 @@ function renderForums() {
         p.textContent = forum.desc;
 
         const countSpan = document.createElement("span");
-        countSpan.className  = "thread-count";
+        countSpan.className = "thread-count";
         countSpan.textContent = "loading...";
 
         div.appendChild(h3);
@@ -824,19 +726,11 @@ function renderForums() {
         div.addEventListener("click", () => openForum(forum));
         forumListEl.appendChild(div);
 
-        // Pakai get() + timeout fallback supaya ga stuck di browser yg blokir WebSocket
-        const timeout = setTimeout(() => {
-            if (countSpan.textContent === "loading...") countSpan.textContent = "–";
-        }, 5000);
-
-        get(ref(db, `threads/${forum.id}`)).then(snap => {
-            clearTimeout(timeout);
+        const unsub = onValue(ref(db, `threads/${forum.id}`), snap => {
             const count = snap.exists() ? Object.keys(snap.val()).length : 0;
             countSpan.textContent = `${count} thread${count !== 1 ? "s" : ""}`;
-        }).catch(() => {
-            clearTimeout(timeout);
-            countSpan.textContent = "–";
         });
+        activeListeners.push(() => unsub());
     });
 }
 
@@ -844,11 +738,11 @@ function renderForums() {
 function openForum(forum) {
     currentForum = forum;
     history.pushState({ page: "forum", forumId: forum.id }, "", "#/forum/" + forum.name);
-    mainTitle.textContent      = `/${forum.name}/`;
+    mainTitle.textContent = `/${forum.name}/`;
     newThreadBtn.style.display = "inline-flex";
 
     hideAllViews();
-    mainEl.style.display      = "block";
+    mainEl.style.display = "block";
     forumListEl.style.display = "grid";
 
     renderThreads(forum.id);
@@ -858,25 +752,27 @@ function openForum(forum) {
 function renderThreads(forumId) {
     forumListEl.innerHTML = "";
 
-    const threadsRef = ref(db, `threads/${forumId}`);
+    const threadsRef = query(ref(db, `threads/${forumId}`), orderByChild("timestamp"));
+
     const unsub = onValue(threadsRef, snap => {
         forumListEl.innerHTML = "";
 
         if (!snap.exists()) {
             const p = document.createElement("p");
-            p.className  = "empty-msg";
+            p.className = "empty-msg";
             p.textContent = "No threads yet. Be the first to post!";
             forumListEl.appendChild(p);
             return;
         }
 
         const threadArr = [];
-        snap.forEach(child => { threadArr.push({ id: child.key, ...child.val() }); });
-        threadArr.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        snap.forEach(child => {
+            threadArr.unshift({ id: child.key, ...child.val() });
+        });
 
         threadArr.forEach((thread, index) => {
             const div = document.createElement("div");
-            div.className            = "forum-card";
+            div.className = "forum-card";
             div.style.animationDelay = `${index * 0.08}s`;
 
             const h3 = document.createElement("h3");
@@ -886,15 +782,16 @@ function renderThreads(forumId) {
             p.textContent = (thread.content || "").substring(0, 80) + ((thread.content || "").length > 80 ? "..." : "");
 
             const commentCount = thread.comments ? Object.keys(thread.comments).length : 0;
-            const meta         = document.createElement("div");
-            meta.className     = "thread-meta";
+            const meta = document.createElement("div");
+            meta.className = "thread-meta";
 
             const bySpan = document.createElement("span");
             bySpan.textContent = "by ";
+
             const authorB = document.createElement("b");
-            authorB.className        = "clickable-user";
+            authorB.className = "clickable-user";
             authorB.dataset.username = thread.author;
-            authorB.textContent      = thread.author;
+            authorB.textContent = thread.author;
             bySpan.appendChild(authorB);
 
             const cSpan = document.createElement("span");
@@ -914,14 +811,15 @@ function renderThreads(forumId) {
             forumListEl.appendChild(div);
         });
     });
+
     activeListeners.push(() => unsub());
 }
 
 // ===== OPEN THREAD =====
 function openThread(threadId, forumId) {
-    const fid       = forumId || currentForum?.id;
+    const fid = forumId || currentForum?.id;
     currentThreadId = threadId;
-    currentForumId  = fid;
+    currentForumId = fid;
 
     history.pushState({ page: "thread", threadId, forumId: fid }, "", `#/forum/${fid}/thread/${threadId}`);
 
@@ -943,93 +841,59 @@ function renderThreadView(threadId, forumId) {
         const thread = { id: threadId, ...snap.val() };
 
         mainTitle.textContent = `/${forumId}/ › ${thread.title}`;
-        threadContent.innerHTML = "";
 
+        threadContent.innerHTML = "";
         const dateStr = thread.timestamp
             ? new Date(thread.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
             : "";
 
-        const postDiv  = document.createElement("div");
+        const postDiv = document.createElement("div");
         postDiv.className = "thread-post";
 
         const header = document.createElement("div");
         header.className = "post-header";
 
         const authorSpan = document.createElement("span");
-        authorSpan.className        = "post-author clickable-user";
+        authorSpan.className = "post-author clickable-user";
         authorSpan.dataset.username = thread.author;
-        authorSpan.textContent      = thread.author;
+        authorSpan.textContent = thread.author;
 
         const dateSpan = document.createElement("span");
-        dateSpan.className  = "post-date";
+        dateSpan.className = "post-date";
         dateSpan.textContent = dateStr;
 
         header.appendChild(authorSpan);
         header.appendChild(dateSpan);
 
         const titleEl = document.createElement("h2");
-        titleEl.className  = "post-title";
+        titleEl.className = "post-title";
         titleEl.textContent = thread.title;
 
         const bodyEl = document.createElement("div");
-        bodyEl.className  = "post-body";
+        bodyEl.className = "post-body";
         bodyEl.textContent = thread.content;
 
         postDiv.appendChild(header);
         postDiv.appendChild(titleEl);
         postDiv.appendChild(bodyEl);
 
-        if (thread.mediaItems && thread.mediaItems.length > 0) {
-            const grid = document.createElement("div");
-            grid.className = "thread-media-grid";
-            thread.mediaItems.forEach(item => {
-                console.log("Thread media item:", item.url, "Type:", item.type); // Debug log
-                
-                const isVideo = (typeof item.type === "string" && item.type.startsWith("video/"))
-                    || /\.(mp4|webm|mov|avi|mkv)(\?|$)/i.test(item.url || "");
-                if (isVideo) {
-                    const vid = document.createElement("video");
-                    vid.src       = item.url;
-                    vid.controls  = true;
-                    vid.className = "thread-media-item";
-                    vid.onerror = () => {
-                        console.error("Video failed to load:", item.url);
-                        vid.style.display = "none";
-                    };
-                    grid.appendChild(vid);
-                } else {
-                    const img = document.createElement("img");
-                    img.src       = item.url;
-                    img.className = "thread-media-item";
-                    img.alt       = "";
-                    img.onerror = () => {
-                        console.error("Image failed to load:", item.url);
-                        img.style.display = "none";
-                    };
-                    img.onload = () => {
-                        console.log("Thread image loaded successfully:", item.url);
-                    };
-                    grid.appendChild(img);
-                }
-            });
-            postDiv.appendChild(grid);
+        if (thread.imageUrl) {
+            const img = document.createElement("img");
+            img.src = thread.imageUrl;
+            img.className = "thread-media";
+            img.alt = "Thread image";
+            postDiv.appendChild(img);
         }
 
-        // Support for legacy single imageUrl/videoUrl fields
-        if (!thread.mediaItems) {
-            if (thread.imageUrl) {
-                const img = document.createElement("img");
-                img.src       = thread.imageUrl;
-                img.className = "thread-media";
-                img.alt       = "Thread image";
-                postDiv.appendChild(img);
-            }
-            if (thread.videoUrl) {
-                const vid = document.createElement("video");
-                vid.src       = thread.videoUrl;
-                vid.className = "thread-media";
-                vid.controls  = true;
-                postDiv.appendChild(vid);
+        if (thread.video) {
+            const embedUrl = convertVideoUrl(thread.video);
+            if (embedUrl) {
+                const iframe = document.createElement("iframe");
+                iframe.src = embedUrl;
+                iframe.className = "thread-media video-embed";
+                iframe.frameBorder = "0";
+                iframe.allowFullscreen = true;
+                postDiv.appendChild(iframe);
             }
         }
 
@@ -1039,13 +903,11 @@ function renderThreadView(threadId, forumId) {
         const commentList = document.getElementById("commentList");
         commentList.innerHTML = "";
 
-        const comments = thread.comments
-            ? Object.values(thread.comments).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-            : [];
+        const comments = thread.comments ? Object.values(thread.comments).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)) : [];
 
         if (comments.length === 0) {
             const p = document.createElement("p");
-            p.className  = "empty-msg";
+            p.className = "empty-msg";
             p.textContent = "No comments yet.";
             commentList.appendChild(p);
         } else {
@@ -1053,7 +915,7 @@ function renderThreadView(threadId, forumId) {
                 const div = document.createElement("div");
                 div.className = "comment-item";
 
-                const cDateStr = c.timestamp
+                const dateStr = c.timestamp
                     ? new Date(c.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                     : "";
 
@@ -1062,19 +924,16 @@ function renderThreadView(threadId, forumId) {
 
                 const aSpan = document.createElement("span");
                 aSpan.className = "comment-author clickable-user";
-                const cDisplayName = (c.userId && userIdToUsername[c.userId])
-                    ? userIdToUsername[c.userId]
-                    : c.author;
-                aSpan.dataset.username = cDisplayName;
-                aSpan.textContent      = cDisplayName;
-                if (c.userId) aSpan.dataset.userid = c.userId;
+                aSpan.dataset.username = c.author;
+                aSpan.textContent = c.author;
 
                 const dSpan = document.createElement("span");
-                dSpan.className  = "comment-date";
-                dSpan.textContent = cDateStr;
+                dSpan.className = "comment-date";
+                dSpan.textContent = dateStr;
 
                 metaDiv.appendChild(aSpan);
                 metaDiv.appendChild(dSpan);
+
                 div.appendChild(metaDiv);
 
                 if (c.text) {
@@ -1084,21 +943,11 @@ function renderThreadView(threadId, forumId) {
                 }
 
                 if (c.mediaUrl) {
-                    const isVideo = (typeof c.mediaType === "string" && c.mediaType.startsWith("video/"))
-                        || /\.(mp4|webm|mov|avi|mkv)(\?|$)/i.test(c.mediaUrl || "");
-                    if (isVideo) {
-                        const vid = document.createElement("video");
-                        vid.src       = c.mediaUrl;
-                        vid.controls  = true;
-                        vid.className = "comment-media";
-                        div.appendChild(vid);
-                    } else {
-                        const img = document.createElement("img");
-                        img.src       = c.mediaUrl;
-                        img.className = "comment-media";
-                        img.alt       = "image";
-                        div.appendChild(img);
-                    }
+                    const img = document.createElement("img");
+                    img.src = c.mediaUrl;
+                    img.className = "comment-media";
+                    img.alt = "image";
+                    div.appendChild(img);
                 }
 
                 attachUserClicks(div);
@@ -1106,46 +955,53 @@ function renderThreadView(threadId, forumId) {
             });
         }
     });
+
     activeListeners.push(() => unsub());
 
-    const submitBtn  = document.getElementById("submitComment");
-    const newSubmit  = submitBtn.cloneNode(true);
+    // Re-wire submit button (clone to remove old listeners)
+    const submitBtn = document.getElementById("submitComment");
+    const newSubmit = submitBtn.cloneNode(true);
     submitBtn.parentNode.replaceChild(newSubmit, submitBtn);
 
-    const fileInput    = document.getElementById("commentFile");
+    // Re-wire file input (clone to remove old listeners)
+    const fileInput = document.getElementById("commentFile");
     const newFileInput = fileInput.cloneNode(true);
     fileInput.parentNode.replaceChild(newFileInput, fileInput);
+    // Re-attach label's for target still works since id stays the same
 
+    // Pending media for current comment
     let pendingCommentFile = null;
 
     newFileInput.addEventListener("change", e => {
         const file = e.target.files[0];
         if (!file || !file.type.startsWith("image/")) return;
         pendingCommentFile = file;
-        const preview    = document.getElementById("commentMediaPreview");
+
+        // Show preview
+        const preview = document.getElementById("commentMediaPreview");
         const previewImg = document.getElementById("commentMediaPreviewImg");
-        previewImg.src           = URL.createObjectURL(file);
-        preview.style.display   = "flex";
-        e.target.value          = "";
+        previewImg.src = URL.createObjectURL(file);
+        preview.style.display = "flex";
+        e.target.value = "";
     });
 
     document.getElementById("commentMediaClear").onclick = () => {
-        pendingCommentFile                                          = null;
+        pendingCommentFile = null;
         document.getElementById("commentMediaPreview").style.display = "none";
-        document.getElementById("commentMediaPreviewImg").src         = "";
+        document.getElementById("commentMediaPreviewImg").src = "";
     };
 
     newSubmit.addEventListener("click", async () => {
         const text = document.getElementById("commentInput").value.trim();
         if (!text && !pendingCommentFile) return;
 
-        let mediaUrl  = null;
+        let mediaUrl = null;
         let mediaType = null;
 
         if (pendingCommentFile) {
-            showSendingIndicator(true, "Uploading...");
+            showSendingIndicator(true);
             try {
-                mediaUrl  = await uploadMedia(pendingCommentFile);
+                mediaUrl = await uploadMedia(pendingCommentFile);
                 mediaType = pendingCommentFile.type;
             } catch(e) {
                 alert("Upload gagal: " + e.message);
@@ -1153,22 +1009,49 @@ function renderThreadView(threadId, forumId) {
                 return;
             }
             showSendingIndicator(false);
-            pendingCommentFile                                          = null;
+            // Clear preview
+            pendingCommentFile = null;
             document.getElementById("commentMediaPreview").style.display = "none";
-            document.getElementById("commentMediaPreviewImg").src         = "";
+            document.getElementById("commentMediaPreviewImg").src = "";
         }
 
         document.getElementById("commentInput").value = "";
 
         await push(ref(db, `threads/${forumId}/${threadId}/comments`), {
-            userId:    MY_USER_ID,
-            author:    currentUser.username,
-            text:      text || "",
-            mediaUrl:  mediaUrl  || null,
+            author: currentUser.username,
+            text: text || "",
+            mediaUrl: mediaUrl || null,
             mediaType: mediaType || null,
             timestamp: serverTimestamp()
         });
     });
+}
+
+// ===== VIDEO URL CONVERTER =====
+function convertVideoUrl(url) {
+    try {
+        const u = new URL(url);
+        if (u.protocol !== "https:") return null;
+        if (u.hostname.includes("youtube.com") || u.hostname.includes("youtu.be")) {
+            const vid = u.searchParams.get("v") || u.pathname.split("/").pop();
+            if (!/^[\w-]{5,20}$/.test(vid)) return null;
+            return `https://www.youtube.com/embed/${vid}`;
+        }
+        return null;
+    } catch { return null; }
+}
+
+// ===== SENDING INDICATOR =====
+function showSendingIndicator(show) {
+    let el = document.getElementById("sendingIndicator");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "sendingIndicator";
+        el.textContent = "Uploading...";
+        el.style.cssText = "position:fixed;bottom:70px;right:20px;background:#1e1e1e;border:1px solid #2a2a2a;color:#777;padding:6px 14px;border-radius:20px;font-size:12px;font-family:JetBrains Mono,monospace;z-index:999;";
+        document.body.appendChild(el);
+    }
+    el.style.display = show ? "block" : "none";
 }
 
 // ===== SIDEBAR =====
@@ -1239,100 +1122,50 @@ const saveThreadBtn   = document.getElementById("saveThreadBtn");
 
 newThreadBtn.addEventListener("click", () => {
     document.getElementById("threadTitleInput").value = "";
-    document.getElementById("threadBodyInput").value  = "";
-    document.getElementById("threadMediaInput").value = "";
-    threadPendingFiles = [];
-    renderThreadMediaPreview();
+    document.getElementById("threadBodyInput").value = "";
+    document.getElementById("threadImageInput").value = "";
+    document.getElementById("threadVideoInput").value = "";
     newThreadModal.classList.add("active");
 });
 
 cancelThreadBtn.addEventListener("click", () => newThreadModal.classList.remove("active"));
 
-let threadPendingFiles = [];
-
-function renderThreadMediaPreview() {
-    const preview = document.getElementById("threadMediaPreview");
-    const countEl = document.getElementById("threadMediaCount");
-    preview.innerHTML    = "";
-    countEl.textContent  = `${threadPendingFiles.length} / 3`;
-    if (threadPendingFiles.length === 0) return;
-
-    threadPendingFiles.forEach((file, idx) => {
-        const item = document.createElement("div");
-        item.className = "thread-preview-item";
-
-        if (file.type.startsWith("video/")) {
-            const vid = document.createElement("video");
-            vid.src      = URL.createObjectURL(file);
-            vid.controls = true;
-            item.appendChild(vid);
-        } else {
-            const img = document.createElement("img");
-            img.src = URL.createObjectURL(file);
-            item.appendChild(img);
-        }
-
-        const rm = document.createElement("button");
-        rm.className  = "thread-preview-remove";
-        rm.textContent = "✕";
-        rm.onclick = () => {
-            threadPendingFiles.splice(idx, 1);
-            renderThreadMediaPreview();
-        };
-        item.appendChild(rm);
-        preview.appendChild(item);
-    });
-}
-
-document.getElementById("threadMediaInput").addEventListener("change", e => {
-    const files     = Array.from(e.target.files);
-    const remaining = 3 - threadPendingFiles.length;
-    if (remaining <= 0) { alert("Maksimal 3 media."); e.target.value = ""; return; }
-
-    const toAdd = files.slice(0, remaining);
-    if (files.length > remaining) alert(`Hanya ${remaining} file lagi yang bisa ditambah. Sisanya diabaikan.`);
-
-    threadPendingFiles = [...threadPendingFiles, ...toAdd];
-    e.target.value     = "";
-    renderThreadMediaPreview();
-});
-
 saveThreadBtn.addEventListener("click", async () => {
-    const title   = document.getElementById("threadTitleInput").value.trim();
-    const content = document.getElementById("threadBodyInput").value.trim();
+    const title    = document.getElementById("threadTitleInput").value.trim();
+    const content  = document.getElementById("threadBodyInput").value.trim();
+    const videoUrl = document.getElementById("threadVideoInput").value.trim();
 
     if (!title || !content) { alert("Title and content are required."); return; }
 
-    const mediaItems = [];
-    if (threadPendingFiles.length > 0) {
-        for (const file of threadPendingFiles) {
-            showSendingIndicator(true, "Uploading...");
-            try {
-                const url = await uploadMedia(file);
-                mediaItems.push({ url, type: file.type || null });
-            } catch(e) {
-                alert("Upload gagal: " + e.message);
-                showSendingIndicator(false);
-                return;
-            }
+    const safeVideo = videoUrl ? (convertVideoUrl(videoUrl) ? videoUrl : null) : null;
+    if (videoUrl && !safeVideo) { alert("Only YouTube video URLs are supported."); return; }
+
+    let imageUrl = null;
+    const imgFile = document.getElementById("threadImageInput").files[0];
+
+    if (imgFile) {
+        if (!imgFile.type.startsWith("image/")) { alert("Please select an image file."); return; }
+        showSendingIndicator(true);
+        try {
+            imageUrl = await uploadMedia(imgFile);
+        } catch(e) {
+            alert("Image upload failed.");
+            showSendingIndicator(false);
+            return;
         }
         showSendingIndicator(false);
     }
 
     await push(ref(db, `threads/${currentForum.id}`), {
-        forumId:    currentForum.id,
-        title,
-        content,
-        author:     currentUser.username,
-        mediaItems: mediaItems.length > 0 ? mediaItems : null,
-        imageUrl:   null,
-        videoUrl:   null,
-        timestamp:  serverTimestamp(),
-        comments:   {}
+        forumId: currentForum.id,
+        title, content,
+        author: currentUser.username,
+        imageUrl,
+        video: safeVideo,
+        timestamp: serverTimestamp(),
+        comments: {}
     });
 
-    threadPendingFiles = [];
-    renderThreadMediaPreview();
     newThreadModal.classList.remove("active");
 });
 
@@ -1349,7 +1182,7 @@ function renderUser() {
 
 function openProfile() {
     document.getElementById("editUsername").value = currentUser.username;
-    document.getElementById("editBio").value      = currentUser.bio;
+    document.getElementById("editBio").value = currentUser.bio;
     profileModal.classList.add("active");
 }
 
@@ -1374,12 +1207,13 @@ saveProfileBtn.addEventListener("click", async () => {
         }
     }
 
+    // FIX: Mark old presence offline before renaming
     if (newName !== oldName) {
         await set(ref(db, `presence/${oldName}`), { online: false, last: serverTimestamp() });
     }
 
     currentUser.username = newName;
-    currentUser.bio      = newBio;
+    currentUser.bio = newBio;
     localStorage.setItem("user", JSON.stringify(currentUser));
 
     if (newName !== oldName) {
@@ -1388,12 +1222,14 @@ saveProfileBtn.addEventListener("click", async () => {
 
     await set(ref(db, `profiles/${newName}`), {
         username: newName,
-        bio:      newBio,
-        avatar:   currentUser.avatar || null,
-        userId:   MY_USER_ID
+        bio: newBio,
+        avatar: currentUser.avatar || null,
+        userId: MY_USER_ID
     });
 
     await set(ref(db, `userIds/${MY_USER_ID}`), newName);
+
+    // FIX: Set new presence with new name
     await heartbeat();
     renderUser();
     profileModal.classList.remove("active");
@@ -1403,7 +1239,7 @@ avatarInput.addEventListener("change", async e => {
     const file = e.target.files[0];
     if (!file || !file.type.startsWith("image/")) return;
 
-    showSendingIndicator(true, "Uploading avatar...");
+    showSendingIndicator(true);
     try {
         const url = await uploadMedia(file);
         currentUser.avatar = url;
@@ -1418,8 +1254,8 @@ avatarInput.addEventListener("change", async e => {
 // ===== INIT =====
 set(ref(db, `profiles/${currentUser.username}`), {
     username: currentUser.username,
-    bio:      currentUser.bio || "No bio yet.",
-    avatar:   currentUser.avatar || null
+    bio: currentUser.bio || "No bio yet.",
+    avatar: currentUser.avatar || null
 });
 
 listenOnlineUsers();

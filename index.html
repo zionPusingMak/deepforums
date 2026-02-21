@@ -141,15 +141,14 @@
         <input type="text" id="threadTitleInput" placeholder="Thread title...">
         <label>Content</label>
         <textarea id="threadBodyInput" style="height:120px;" placeholder="What's on your mind?"></textarea>
-        <label>Media <span style="color:#555;font-size:10px;">max 3 files (image/video)</span></label>
+        <label>Media (optional)</label>
         <div class="thread-media-inputs">
-            <label class="media-pick-btn" for="threadMediaInput">
-                <i class="fa-solid fa-plus"></i> Add Media
-            </label>
-            <input type="file" id="threadMediaInput" accept="image/*,video/*" multiple style="display:none;">
-            <span id="threadMediaCount" style="font-size:11px;color:#555;align-self:center;">0 / 3</span>
+            <label class="media-pick-btn" for="threadImageInput"><i class="fa-solid fa-image"></i> Image</label>
+            <input type="file" id="threadImageInput" accept="image/*" style="display:none;">
+            <label class="media-pick-btn" for="threadVideoInput"><i class="fa-solid fa-video"></i> Video</label>
+            <input type="file" id="threadVideoInput" accept="video/*" style="display:none;">
         </div>
-        <div id="threadMediaPreview" class="thread-media-preview-grid"></div>
+        <div id="threadMediaPreview" style="display:none; margin-top:8px;"></div>
         <div class="modal-actions">
             <button id="cancelThreadBtn">Cancel</button>
             <button id="saveThreadBtn">Post</button>
@@ -176,4 +175,4 @@
 
 <script type="module" src="./script.js"></script>
 </body>
-    </html>
+</html>
