@@ -43,15 +43,27 @@ function listenUserIdMap() {
 const MAX_VIDEO_BYTES = 28 * 1024 * 1024; // 28MB
 
 async function uploadMedia(file) {
+    console.log("Uploading file:", file.name, "Size:", file.size, "Type:", file.type); // Debug log
+    
     if (file.type.startsWith("video/") && file.size > MAX_VIDEO_BYTES) {
         throw new Error(`Video terlalu besar (${(file.size/1024/1024).toFixed(1)}MB). Maksimal 28MB.`);
     }
 
     try {
-        return await uploadToYupra(file);
+        console.log("Trying Yupra upload...");
+        const url = await uploadToYupra(file);
+        console.log("Yupra upload success:", url);
+        return url;
     } catch(e) {
         console.warn("Yupra failed, trying pomf:", e.message);
-        return await uploadToPomf(file);
+        try {
+            const url = await uploadToPomf(file);
+            console.log("Pomf upload success:", url);
+            return url;
+        } catch(e2) {
+            console.error("Both upload services failed:", e.message, e2.message);
+            throw new Error("Upload gagal ke semua service. Coba lagi nanti.");
+        }
     }
 }
 
@@ -68,15 +80,27 @@ async function uploadToYupra(file) {
         body: formData
     });
 
+    if (!res.ok) {
+        throw new Error(`Yupra HTTP error: ${res.status} ${res.statusText}`);
+    }
+
     const text = await res.text();
+    console.log("Yupra response:", text.substring(0, 200)); // Debug log
+    
     let data;
     try { data = JSON.parse(text); }
-    catch(e) { throw new Error("Yupra response invalid: " + text.slice(0, 80)); }
+    catch(e) { 
+        console.error("Yupra JSON parse error:", text.slice(0, 200));
+        throw new Error("Yupra response invalid: " + text.slice(0, 80)); 
+    }
 
     if (!data.success || !data.files || data.files.length === 0) {
         throw new Error(data.message || "Yupra upload failed");
     }
-    return "https://cdn.yupra.my.id" + data.files[0].url;
+    
+    const url = "https://cdn.yupra.my.id" + data.files[0].url;
+    console.log("Yupra final URL:", url);
+    return url;
 }
 
 async function uploadToPomf(file) {
@@ -92,15 +116,27 @@ async function uploadToPomf(file) {
         body: formData
     });
 
+    if (!res.ok) {
+        throw new Error(`Pomf HTTP error: ${res.status} ${res.statusText}`);
+    }
+
     const text = await res.text();
+    console.log("Pomf response:", text.substring(0, 200)); // Debug log
+    
     let data;
     try { data = JSON.parse(text); }
-    catch(e) { throw new Error("Pomf response invalid: " + text.slice(0, 80)); }
+    catch(e) { 
+        console.error("Pomf JSON parse error:", text.slice(0, 200));
+        throw new Error("Pomf response invalid: " + text.slice(0, 80)); 
+    }
 
     if (!data.success || !data.files || data.files.length === 0) {
         throw new Error("Pomf upload failed: " + text.slice(0, 80));
     }
-    return "https://pomf2.lain.la" + data.files[0].url;
+    
+    const url = "https://pomf2.lain.la" + data.files[0].url;
+    console.log("Pomf final URL:", url);
+    return url;
 }
 
 // ===== USER =====
@@ -394,6 +430,8 @@ function buildChatMsgEl(m, showClickableAuthor) {
     }
 
     if (m.mediaUrl) {
+        console.log("Media URL:", m.mediaUrl, "Type:", m.mediaType); // Debug log
+        
         // Deteksi video dari mediaType ATAU ekstensi URL
         const isVideo = (typeof m.mediaType === "string" && m.mediaType.startsWith("video/"))
             || /\.(mp4|webm|mov|avi|mkv)(\?|$)/i.test(m.mediaUrl);
@@ -402,17 +440,39 @@ function buildChatMsgEl(m, showClickableAuthor) {
             || /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(m.mediaUrl)
             || typeof m.mediaType !== "string"
         );
+        
         if (isVideo) {
             const vid = document.createElement("video");
             vid.className = "chat-media";
             vid.controls  = true;
-            vid.src        = m.mediaUrl;
+            vid.src       = m.mediaUrl;
+            vid.onerror = () => {
+                console.error("Video failed to load:", m.mediaUrl);
+                const errorDiv = document.createElement("div");
+                errorDiv.className = "chat-text";
+                errorDiv.textContent = "⚠️ Video gagal dimuat";
+                errorDiv.style.color = "#ff5555";
+                wrapper.appendChild(errorDiv);
+            };
             wrapper.appendChild(vid);
         } else if (isImage) {
             const img = document.createElement("img");
             img.className = "chat-media";
             img.alt       = "image";
-            img.src        = m.mediaUrl;
+            img.src       = m.mediaUrl;
+            img.onerror = () => {
+                console.error("Image failed to load:", m.mediaUrl);
+                img.style.display = "none";
+                const errorDiv = document.createElement("div");
+                errorDiv.className = "chat-text";
+                errorDiv.textContent = "⚠️ Image gagal dimuat: " + m.mediaUrl.substring(0, 50) + "...";
+                errorDiv.style.color = "#ff5555";
+                errorDiv.style.fontSize = "11px";
+                wrapper.appendChild(errorDiv);
+            };
+            img.onload = () => {
+                console.log("Image loaded successfully:", m.mediaUrl);
+            };
             wrapper.appendChild(img);
         }
     }
@@ -923,6 +983,8 @@ function renderThreadView(threadId, forumId) {
             const grid = document.createElement("div");
             grid.className = "thread-media-grid";
             thread.mediaItems.forEach(item => {
+                console.log("Thread media item:", item.url, "Type:", item.type); // Debug log
+                
                 const isVideo = (typeof item.type === "string" && item.type.startsWith("video/"))
                     || /\.(mp4|webm|mov|avi|mkv)(\?|$)/i.test(item.url || "");
                 if (isVideo) {
@@ -930,12 +992,23 @@ function renderThreadView(threadId, forumId) {
                     vid.src       = item.url;
                     vid.controls  = true;
                     vid.className = "thread-media-item";
+                    vid.onerror = () => {
+                        console.error("Video failed to load:", item.url);
+                        vid.style.display = "none";
+                    };
                     grid.appendChild(vid);
                 } else {
                     const img = document.createElement("img");
                     img.src       = item.url;
                     img.className = "thread-media-item";
                     img.alt       = "";
+                    img.onerror = () => {
+                        console.error("Image failed to load:", item.url);
+                        img.style.display = "none";
+                    };
+                    img.onload = () => {
+                        console.log("Thread image loaded successfully:", item.url);
+                    };
                     grid.appendChild(img);
                 }
             });
